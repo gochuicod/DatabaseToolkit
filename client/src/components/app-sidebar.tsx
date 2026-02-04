@@ -20,8 +20,8 @@ const tools = [
     description: "AI-powered email list generation",
   },
   {
-    title: "BrainWorks Filtering",
-    url: "/brainworks-filtering",
+    title: "Filtering Tool",
+    url: "/filtering-tool",
     icon: Filter,
     description: "Filter and export contact lists",
   },

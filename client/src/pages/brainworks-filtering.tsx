@@ -1,11 +1,27 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Filter, RefreshCw, AlertCircle, Plus, X, Search, Check, ChevronDown, Loader2 } from "lucide-react";
+import {
+  Filter,
+  RefreshCw,
+  AlertCircle,
+  Plus,
+  X,
+  Search,
+  Check,
+  ChevronDown,
+  Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -33,8 +49,14 @@ import { useToast } from "@/hooks/use-toast";
 import { useDebounce } from "@/hooks/use-debounce";
 import { ResultsPanel } from "@/components/results-panel";
 import { ExportDialog } from "@/components/export-dialog";
+// Import the DatabaseSelector component
+import { DatabaseSelector } from "@/components/database-selector";
 import { apiRequest } from "@/lib/queryClient";
-import { OPERATOR_LABELS, BASE_TYPE_OPERATORS, DEFAULT_OPERATORS } from "@/lib/constants";
+import {
+  OPERATOR_LABELS,
+  BASE_TYPE_OPERATORS,
+  DEFAULT_OPERATORS,
+} from "@/lib/constants";
 import type {
   MetabaseDatabase,
   MetabaseTable,
@@ -49,33 +71,42 @@ import type {
 
 export default function BrainworksFiltering() {
   const { toast } = useToast();
-  
-  const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(null);
+
+  const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
+    null,
+  );
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [filters, setFilters] = useState<Record<number, FilterValue>>({});
-  const [fieldOptions, setFieldOptions] = useState<Record<number, FieldOption[]>>({});
-  const [loadingFieldOptions, setLoadingFieldOptions] = useState<Record<number, boolean>>({});
+  const [fieldOptions, setFieldOptions] = useState<
+    Record<number, FieldOption[]>
+  >({});
+  const [loadingFieldOptions, setLoadingFieldOptions] = useState<
+    Record<number, boolean>
+  >({});
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
-  const [exportedEntries, setExportedEntries] = useState<MailingListEntry[]>([]);
+  const [exportedEntries, setExportedEntries] = useState<MailingListEntry[]>(
+    [],
+  );
   const [exportedTotal, setExportedTotal] = useState(0);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
 
   const debouncedFilters = useDebounce(filters, 300);
 
-  const { 
-    data: databases = [], 
+  const {
+    data: databases = [],
     isLoading: isLoadingDatabases,
-    error: databasesError 
+    error: databasesError,
   } = useQuery<MetabaseDatabase[]>({
     queryKey: ["/api/metabase/databases"],
   });
 
-  // Auto-select BrainWorks Data database
+  // Auto-select BrainWorks Data database initially, but allow changes
   useEffect(() => {
     if (databases.length > 0 && !selectedDatabaseId) {
-      const brainworksDb = databases.find(db => 
-        db.name.toLowerCase().includes("brainworks") || 
-        db.name.toLowerCase().includes("brain works")
+      const brainworksDb = databases.find(
+        (db) =>
+          db.name.toLowerCase().includes("brainworks") ||
+          db.name.toLowerCase().includes("brain works"),
       );
       if (brainworksDb) {
         setSelectedDatabaseId(brainworksDb.id);
@@ -85,25 +116,23 @@ export default function BrainworksFiltering() {
     }
   }, [databases, selectedDatabaseId]);
 
-  const { 
-    data: tables = [], 
-    isLoading: isLoadingTables 
-  } = useQuery<MetabaseTable[]>({
+  const { data: tables = [], isLoading: isLoadingTables } = useQuery<
+    MetabaseTable[]
+  >({
     queryKey: ["/api/metabase/databases", selectedDatabaseId, "tables"],
     enabled: !!selectedDatabaseId,
   });
 
-  // Auto-select first table when tables load
+  // Auto-select first table when tables load (if none selected)
   useEffect(() => {
     if (tables.length > 0 && !selectedTableId) {
       setSelectedTableId(tables[0].id);
     }
   }, [tables, selectedTableId]);
 
-  const { 
-    data: fields = [], 
-    isLoading: isLoadingFields 
-  } = useQuery<MetabaseField[]>({
+  const { data: fields = [], isLoading: isLoadingFields } = useQuery<
+    MetabaseField[]
+  >({
     queryKey: ["/api/metabase/tables", selectedTableId, "fields"],
     enabled: !!selectedTableId,
   });
@@ -130,13 +159,17 @@ export default function BrainworksFiltering() {
     onError: (error) => {
       toast({
         title: "Count failed",
-        description: error instanceof Error ? error.message : "Failed to get count",
+        description:
+          error instanceof Error ? error.message : "Failed to get count",
         variant: "destructive",
       });
     },
   });
 
-  const exportMutation = useMutation<{ entries: MailingListEntry[]; total: number }>({
+  const exportMutation = useMutation<{
+    entries: MailingListEntry[];
+    total: number;
+  }>({
     mutationFn: async () => {
       if (!selectedDatabaseId || !selectedTableId) {
         throw new Error("Please select a table first");
@@ -160,7 +193,10 @@ export default function BrainworksFiltering() {
     onError: (error) => {
       toast({
         title: "Export failed",
-        description: error instanceof Error ? error.message : "Failed to generate mailing list",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Failed to generate mailing list",
         variant: "destructive",
       });
     },
@@ -172,12 +208,21 @@ export default function BrainworksFiltering() {
     }
   }, [selectedDatabaseId, selectedTableId, debouncedFilters]);
 
+  // Reset filters when table changes
   useEffect(() => {
     if (selectedTableId) {
       setFilters({});
       setFieldOptions({});
     }
   }, [selectedTableId]);
+
+  // Handle changing the database
+  const handleDatabaseChange = useCallback((id: number) => {
+    setSelectedDatabaseId(id);
+    setSelectedTableId(null); // Clear table selection when DB changes
+    setFilters({}); // Clear filters
+    setFieldOptions({}); // Clear options
+  }, []);
 
   const handleTableChange = useCallback((id: number) => {
     setSelectedTableId(id);
@@ -197,15 +242,18 @@ export default function BrainworksFiltering() {
     setAddFilterOpen(false);
   }, []);
 
-  const handleFilterChange = useCallback((fieldId: number, filter: FilterValue | null) => {
-    setFilters((prev) => {
-      if (filter === null) {
-        const { [fieldId]: _, ...rest } = prev;
-        return rest;
-      }
-      return { ...prev, [fieldId]: filter };
-    });
-  }, []);
+  const handleFilterChange = useCallback(
+    (fieldId: number, filter: FilterValue | null) => {
+      setFilters((prev) => {
+        if (filter === null) {
+          const { [fieldId]: _, ...rest } = prev;
+          return rest;
+        }
+        return { ...prev, [fieldId]: filter };
+      });
+    },
+    [],
+  );
 
   const handleRemoveFilter = useCallback((filterId: string) => {
     setFilters((prev) => {
@@ -218,30 +266,43 @@ export default function BrainworksFiltering() {
     setFilters({});
   }, []);
 
-  const handleRequestFieldOptions = useCallback(async (fieldId: number) => {
-    if (fieldOptions[fieldId] || loadingFieldOptions[fieldId]) return;
-    if (!selectedDatabaseId || !selectedTableId) return;
+  const handleRequestFieldOptions = useCallback(
+    async (fieldId: number) => {
+      if (fieldOptions[fieldId] || loadingFieldOptions[fieldId]) return;
+      if (!selectedDatabaseId || !selectedTableId) return;
 
-    setLoadingFieldOptions((prev) => ({ ...prev, [fieldId]: true }));
+      setLoadingFieldOptions((prev) => ({ ...prev, [fieldId]: true }));
 
-    try {
-      const response = await apiRequest("POST", "/api/metabase/field-options", {
-        databaseId: selectedDatabaseId,
-        tableId: selectedTableId,
-        fieldId,
-      });
-      const data = await response.json();
-      setFieldOptions((prev) => ({ ...prev, [fieldId]: data.options }));
-    } catch (error) {
-      toast({
-        title: "Failed to load options",
-        description: "Could not load field values",
-        variant: "destructive",
-      });
-    } finally {
-      setLoadingFieldOptions((prev) => ({ ...prev, [fieldId]: false }));
-    }
-  }, [selectedDatabaseId, selectedTableId, fieldOptions, loadingFieldOptions, toast]);
+      try {
+        const response = await apiRequest(
+          "POST",
+          "/api/metabase/field-options",
+          {
+            databaseId: selectedDatabaseId,
+            tableId: selectedTableId,
+            fieldId,
+          },
+        );
+        const data = await response.json();
+        setFieldOptions((prev) => ({ ...prev, [fieldId]: data.options }));
+      } catch (error) {
+        toast({
+          title: "Failed to load options",
+          description: "Could not load field values",
+          variant: "destructive",
+        });
+      } finally {
+        setLoadingFieldOptions((prev) => ({ ...prev, [fieldId]: false }));
+      }
+    },
+    [
+      selectedDatabaseId,
+      selectedTableId,
+      fieldOptions,
+      loadingFieldOptions,
+      toast,
+    ],
+  );
 
   const handleExport = useCallback(() => {
     exportMutation.mutate();
@@ -277,7 +338,10 @@ export default function BrainworksFiltering() {
         field.base_type.includes("BigInteger")
       ) {
         groups.Number.push(field);
-      } else if (field.base_type.includes("Date") || field.base_type.includes("Time")) {
+      } else if (
+        field.base_type.includes("Date") ||
+        field.base_type.includes("Time")
+      ) {
         groups.Date.push(field);
       } else {
         groups.Other.push(field);
@@ -288,9 +352,11 @@ export default function BrainworksFiltering() {
   }, [availableFields]);
 
   const activeFilterFields = useMemo(() => {
-    return Object.keys(filters).map((fieldId) => {
-      return fields.find((f) => f.id === Number(fieldId));
-    }).filter(Boolean) as MetabaseField[];
+    return Object.keys(filters)
+      .map((fieldId) => {
+        return fields.find((f) => f.id === Number(fieldId));
+      })
+      .filter(Boolean) as MetabaseField[];
   }, [filters, fields]);
 
   return (
@@ -299,8 +365,10 @@ export default function BrainworksFiltering() {
         <div className="flex items-center gap-3">
           <Filter className="h-7 w-7 text-primary" />
           <div>
-            <h1 className="text-2xl font-bold">BrainWorks Filtering</h1>
-            <p className="text-sm text-muted-foreground">Filter and export contact lists from BrainWorks Data</p>
+            <h1 className="text-2xl font-bold">Filtering Tool</h1>
+            <p className="text-sm text-muted-foreground">
+              Filter and export contact lists from your databases
+            </p>
           </div>
         </div>
         <Button
@@ -310,7 +378,9 @@ export default function BrainworksFiltering() {
           disabled={!selectedTableId || countMutation.isPending}
           data-testid="button-refresh-count"
         >
-          <RefreshCw className={`h-4 w-4 ${countMutation.isPending ? "animate-spin" : ""}`} />
+          <RefreshCw
+            className={`h-4 w-4 ${countMutation.isPending ? "animate-spin" : ""}`}
+          />
         </Button>
       </div>
 
@@ -319,38 +389,24 @@ export default function BrainworksFiltering() {
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Connection Error</AlertTitle>
           <AlertDescription>
-            {databasesError instanceof Error 
-              ? databasesError.message 
+            {databasesError instanceof Error
+              ? databasesError.message
               : "Unable to connect to Metabase. Please check your credentials and try again."}
           </AlertDescription>
         </Alert>
       )}
 
-      {/* Table Selector */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Select Data Table</CardTitle>
-          <CardDescription>Choose which table to filter</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Select
-            value={selectedTableId?.toString() ?? ""}
-            onValueChange={(val) => handleTableChange(Number(val))}
-            disabled={isLoadingTables || tables.length === 0}
-          >
-            <SelectTrigger data-testid="select-table">
-              <SelectValue placeholder={isLoadingTables ? "Loading tables..." : "Select a table"} />
-            </SelectTrigger>
-            <SelectContent>
-              {tables.map((table) => (
-                <SelectItem key={table.id} value={table.id.toString()}>
-                  {table.display_name || table.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </CardContent>
-      </Card>
+      {/* Database & Table Selector */}
+      <DatabaseSelector
+        databases={databases}
+        tables={tables}
+        selectedDatabaseId={selectedDatabaseId}
+        selectedTableId={selectedTableId}
+        isLoadingDatabases={isLoadingDatabases}
+        isLoadingTables={isLoadingTables}
+        onDatabaseChange={handleDatabaseChange}
+        onTableChange={handleTableChange}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
         {/* Filters Section */}
@@ -364,13 +420,17 @@ export default function BrainworksFiltering() {
                 </Badge>
               )}
             </div>
-            
+
             {/* Add Filter Button */}
             <Popover open={addFilterOpen} onOpenChange={setAddFilterOpen}>
               <PopoverTrigger asChild>
                 <Button
                   variant="outline"
-                  disabled={!selectedTableId || isLoadingFields || availableFields.length === 0}
+                  disabled={
+                    !selectedTableId ||
+                    isLoadingFields ||
+                    availableFields.length === 0
+                  }
                   data-testid="button-add-filter"
                 >
                   <Plus className="h-4 w-4 mr-2" />
@@ -382,22 +442,27 @@ export default function BrainworksFiltering() {
                   <CommandInput placeholder="Search fields..." />
                   <CommandList>
                     <CommandEmpty>No fields found.</CommandEmpty>
-                    {Object.entries(groupedAvailableFields).map(([groupName, groupFields]) => {
-                      if (groupFields.length === 0) return null;
-                      return (
-                        <CommandGroup key={groupName} heading={`${groupName} Fields`}>
-                          {groupFields.map((field) => (
-                            <CommandItem
-                              key={field.id}
-                              onSelect={() => handleAddFilter(field)}
-                              data-testid={`add-filter-${field.name}`}
-                            >
-                              {field.display_name}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      );
-                    })}
+                    {Object.entries(groupedAvailableFields).map(
+                      ([groupName, groupFields]) => {
+                        if (groupFields.length === 0) return null;
+                        return (
+                          <CommandGroup
+                            key={groupName}
+                            heading={`${groupName} Fields`}
+                          >
+                            {groupFields.map((field) => (
+                              <CommandItem
+                                key={field.id}
+                                onSelect={() => handleAddFilter(field)}
+                                data-testid={`add-filter-${field.name}`}
+                              >
+                                {field.display_name}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        );
+                      },
+                    )}
                   </CommandList>
                 </Command>
               </PopoverContent>
@@ -409,21 +474,27 @@ export default function BrainworksFiltering() {
             <Card>
               <CardContent className="py-12 text-center">
                 <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">Loading fields...</p>
+                <p className="text-sm text-muted-foreground">
+                  Loading fields...
+                </p>
               </CardContent>
             </Card>
           ) : !selectedTableId ? (
             <Card>
               <CardContent className="py-12 text-center">
                 <Filter className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                <p className="text-sm font-medium text-muted-foreground">Select a table to start filtering</p>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Select a table to start filtering
+                </p>
               </CardContent>
             </Card>
           ) : activeFilterFields.length === 0 ? (
             <Card>
               <CardContent className="py-12 text-center">
                 <Filter className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                <p className="text-sm font-medium text-muted-foreground">No filters added yet</p>
+                <p className="text-sm font-medium text-muted-foreground">
+                  No filters added yet
+                </p>
                 <p className="text-xs text-muted-foreground mt-1">
                   Click "Add Filter" to start filtering your data
                 </p>
@@ -438,7 +509,9 @@ export default function BrainworksFiltering() {
                   filter={filters[field.id]}
                   options={fieldOptions[field.id]}
                   isLoadingOptions={loadingFieldOptions[field.id]}
-                  onFilterChange={(filter) => handleFilterChange(field.id, filter)}
+                  onFilterChange={(filter) =>
+                    handleFilterChange(field.id, filter)
+                  }
                   onRemove={() => handleRemoveFilter(field.id.toString())}
                   onRequestOptions={() => handleRequestFieldOptions(field.id)}
                 />
@@ -492,15 +565,18 @@ function ActiveFilterCard({
   const [searchQuery, setSearchQuery] = useState("");
   const [valuesOpen, setValuesOpen] = useState(false);
   const [selectedValues, setSelectedValues] = useState<string[]>(
-    filter?.values?.map(String) ?? (filter?.value ? [String(filter.value)] : [])
+    filter?.values?.map(String) ??
+      (filter?.value ? [String(filter.value)] : []),
   );
 
   const operators = BASE_TYPE_OPERATORS[field.base_type] || DEFAULT_OPERATORS;
-  const isNumeric = field.base_type.includes("Integer") || 
-                    field.base_type.includes("Float") || 
-                    field.base_type.includes("Decimal") ||
-                    field.base_type.includes("BigInteger");
-  const isDate = field.base_type.includes("Date") || field.base_type.includes("Time");
+  const isNumeric =
+    field.base_type.includes("Integer") ||
+    field.base_type.includes("Float") ||
+    field.base_type.includes("Decimal") ||
+    field.base_type.includes("BigInteger");
+  const isDate =
+    field.base_type.includes("Date") || field.base_type.includes("Time");
   const isTextField = !isNumeric && !isDate;
 
   useEffect(() => {
@@ -513,7 +589,7 @@ function ActiveFilterCard({
     if (!options) return [];
     if (!searchQuery) return options;
     return options.filter((opt) =>
-      opt.value.toLowerCase().includes(searchQuery.toLowerCase())
+      opt.value.toLowerCase().includes(searchQuery.toLowerCase()),
     );
   }, [options, searchQuery]);
 
@@ -525,7 +601,11 @@ function ActiveFilterCard({
   };
 
   const handleValueChange = (value: string) => {
-    const parsedValue = isNumeric ? (value ? Number(value) : null) : value || null;
+    const parsedValue = isNumeric
+      ? value
+        ? Number(value)
+        : null
+      : value || null;
     onFilterChange({
       ...filter,
       value: parsedValue,
@@ -533,7 +613,11 @@ function ActiveFilterCard({
   };
 
   const handleValueToChange = (value: string) => {
-    const parsedValue = isNumeric ? (value ? Number(value) : null) : value || null;
+    const parsedValue = isNumeric
+      ? value
+        ? Number(value)
+        : null
+      : value || null;
     onFilterChange({
       ...filter,
       valueTo: parsedValue,
@@ -544,9 +628,9 @@ function ActiveFilterCard({
     const newSelected = selectedValues.includes(value)
       ? selectedValues.filter((v) => v !== value)
       : [...selectedValues, value];
-    
+
     setSelectedValues(newSelected);
-    
+
     if (newSelected.length === 0) {
       onFilterChange({
         ...filter,
@@ -596,12 +680,19 @@ function ActiveFilterCard({
         <div className="flex flex-wrap gap-3">
           {/* Operator Select */}
           <div className="min-w-[140px]">
-            <Label className="text-xs text-muted-foreground mb-1.5 block">Condition</Label>
+            <Label className="text-xs text-muted-foreground mb-1.5 block">
+              Condition
+            </Label>
             <Select
               value={currentOperator}
-              onValueChange={(val) => handleOperatorChange(val as FilterOperator)}
+              onValueChange={(val) =>
+                handleOperatorChange(val as FilterOperator)
+              }
             >
-              <SelectTrigger className="h-9" data-testid={`select-operator-${field.name}`}>
+              <SelectTrigger
+                className="h-9"
+                data-testid={`select-operator-${field.name}`}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -620,7 +711,7 @@ function ActiveFilterCard({
               <Label className="text-xs text-muted-foreground mb-1.5 block">
                 {showBetween ? "From" : "Value"}
               </Label>
-              
+
               {isTextField && (options || isLoadingOptions) ? (
                 <Popover open={valuesOpen} onOpenChange={handleValuesOpen}>
                   <PopoverTrigger asChild>
@@ -668,17 +759,26 @@ function ActiveFilterCard({
                             <div
                               key={option.value}
                               className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-md hover-elevate cursor-pointer"
-                              onClick={() => handleMultiSelectToggle(option.value)}
+                              onClick={() =>
+                                handleMultiSelectToggle(option.value)
+                              }
                               data-testid={`option-${field.name}-${option.value}`}
                             >
                               <div className="flex items-center gap-2 min-w-0">
                                 <Checkbox
-                                  checked={selectedValues.includes(option.value)}
+                                  checked={selectedValues.includes(
+                                    option.value,
+                                  )}
                                   className="shrink-0"
                                 />
-                                <span className="text-sm truncate">{option.value}</span>
+                                <span className="text-sm truncate">
+                                  {option.value}
+                                </span>
                               </div>
-                              <Badge variant="outline" className="text-xs shrink-0">
+                              <Badge
+                                variant="outline"
+                                className="text-xs shrink-0"
+                              >
                                 {option.count.toLocaleString()}
                               </Badge>
                             </div>
@@ -704,7 +804,9 @@ function ActiveFilterCard({
           {/* To Value for Between */}
           {showBetween && showValueInput && (
             <div className="min-w-[150px]">
-              <Label className="text-xs text-muted-foreground mb-1.5 block">To</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">
+                To
+              </Label>
               <Input
                 type={isNumeric ? "number" : isDate ? "date" : "text"}
                 placeholder={`To...`}

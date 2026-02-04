@@ -17,7 +17,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={BrainworksFiltering} />
-      <Route path="/brainworks-filtering" component={BrainworksFiltering} />
+      <Route path="/filtering-tool" component={BrainworksFiltering} />
       <Route path="/email-marketing" component={EmailMarketing} />
       <Route path="/brainworks-analysis" component={BrainworksAnalysis} />
       <Route path="/trends-icp" component={TrendsICP} />
