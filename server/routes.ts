@@ -64,17 +64,20 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/metabase/databases/:databaseId/tables/:tableId/rows", async (req, res) => {
-    const databaseId = parseInt(req.params.databaseId, 10);
-    const tableId = parseInt(req.params.tableId, 10);
-    // Changed default limit from 500,000 to 100 for performance
-    const limit = parseInt(req.query.limit as string) || 100;
-    const offset = parseInt(req.query.offset as string) || 0;
+  app.get(
+    "/api/metabase/databases/:databaseId/tables/:tableId/rows",
+    async (req, res) => {
+      const databaseId = parseInt(req.params.databaseId, 10);
+      const tableId = parseInt(req.params.tableId, 10);
+      // Changed default limit from 500,000 to 100 for performance
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
 
-    if (isNaN(databaseId) || isNaN(tableId)) {
-      return res.status(400).json({ error: "Invalid database or table ID" });
-    }
-  });
+      if (isNaN(databaseId) || isNaN(tableId)) {
+        return res.status(400).json({ error: "Invalid database or table ID" });
+      }
+    },
+  );
 
   app.get("/api/metabase/tables/:tableId/fields", async (req, res) => {
     try {
@@ -143,14 +146,19 @@ export async function registerRoutes(
           });
       }
 
+      // Read limit from body (added manual check since it might not be in schema strict definition yet)
+      const limit = req.body.limit || 100000;
       const { databaseId, tableId, filters } = parsed.data;
-      const result = await getCount(databaseId, tableId, filters as any);
+
+      const result = await getCount(databaseId, tableId, filters as any, limit);
       res.json(result);
     } catch (error) {
       console.error("Error getting count:", error);
-      res.status(500).json({
-        error: error instanceof Error ? error.message : "Failed to get count",
-      });
+      res
+        .status(500)
+        .json({
+          error: error instanceof Error ? error.message : "Failed to get count",
+        });
     }
   });
 
@@ -166,17 +174,26 @@ export async function registerRoutes(
           });
       }
 
+      const limit = req.body.limit || 100000;
       const { databaseId, tableId, fieldId } = parsed.data;
-      const options = await getFieldOptions(databaseId, tableId, fieldId);
+
+      const options = await getFieldOptions(
+        databaseId,
+        tableId,
+        fieldId,
+        limit,
+      );
       res.json({ fieldId, options });
     } catch (error) {
       console.error("Error getting field options:", error);
-      res.status(500).json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get field options",
-      });
+      res
+        .status(500)
+        .json({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get field options",
+        });
     }
   });
 
@@ -192,24 +209,28 @@ export async function registerRoutes(
           });
       }
 
-      // UPDATED: Destructure offset and pass to getMailingList
+      const scanLimit = req.body.scanLimit || 100000;
       const { databaseId, tableId, filters, limit, offset } = parsed.data;
+
       const result = await getMailingList(
         databaseId,
         tableId,
         filters as any,
         limit,
         offset,
+        scanLimit, // Pass the scan limit
       );
       res.json(result);
     } catch (error) {
       console.error("Error exporting mailing list:", error);
-      res.status(500).json({
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to export mailing list",
-      });
+      res
+        .status(500)
+        .json({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to export mailing list",
+        });
     }
   });
 
@@ -221,12 +242,10 @@ export async function registerRoutes(
     try {
       const parsed = analyzeConceptSchema.safeParse(req.body);
       if (!parsed.success) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid request body",
-            details: parsed.error.errors,
-          });
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: parsed.error.errors,
+        });
       }
 
       const { concept, databaseId, tableId } = parsed.data;

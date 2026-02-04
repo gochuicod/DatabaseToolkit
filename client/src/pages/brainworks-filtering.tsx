@@ -70,11 +70,12 @@ import type {
 } from "@shared/schema";
 
 // CONSTANT: Hard limit for fetches set to 1,000,000 as requested
-const FETCH_LIMIT = 1000000;
+const FETCH_LIMIT = 100000;
 
 export default function BrainworksFiltering() {
   const { toast } = useToast();
 
+  const [scanLimit, setScanLimit] = useState<number>(FETCH_LIMIT);
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
     null,
   );
@@ -157,6 +158,7 @@ export default function BrainworksFiltering() {
         databaseId: selectedDatabaseId,
         tableId: selectedTableId,
         filters: Object.values(debouncedFilters),
+        limit: scanLimit,
       });
       return response.json();
     },
@@ -174,14 +176,16 @@ export default function BrainworksFiltering() {
   const exportMutation = useMutation<
     { entries: MailingListEntry[]; total: number },
     Error,
-    { isLoadMore?: boolean }
+    { isLoadMore?: boolean; overrideScanLimit?: number } // Add override type
   >({
-    mutationFn: async ({ isLoadMore = false }) => {
+    mutationFn: async ({ isLoadMore = false, overrideScanLimit }) => {
       if (!selectedDatabaseId || !selectedTableId) {
         throw new Error("Please select a table first");
       }
 
       const offsetToUse = isLoadMore ? exportedEntries.length : 0;
+      // Use override if provided (for immediate button click), otherwise state
+      const limitToUse = overrideScanLimit || scanLimit;
 
       const response = await apiRequest("POST", "/api/metabase/export", {
         databaseId: selectedDatabaseId,
@@ -189,6 +193,7 @@ export default function BrainworksFiltering() {
         filters: Object.values(filters),
         limit: FETCH_LIMIT,
         offset: offsetToUse,
+        scanLimit: limitToUse, // Pass scanLimit
       });
       return response.json();
     },
@@ -232,7 +237,7 @@ export default function BrainworksFiltering() {
     if (selectedDatabaseId && selectedTableId) {
       countMutation.mutate();
     }
-  }, [selectedDatabaseId, selectedTableId, debouncedFilters]);
+  }, [selectedDatabaseId, selectedTableId, debouncedFilters, scanLimit]);
 
   // Reset logic when table changes
   useEffect(() => {
@@ -241,6 +246,7 @@ export default function BrainworksFiltering() {
       setFieldOptions({});
       setExportedEntries([]);
       setHasMoreData(true);
+      setScanLimit(FETCH_LIMIT);
     }
   }, [selectedTableId]);
 
@@ -309,6 +315,7 @@ export default function BrainworksFiltering() {
             databaseId: selectedDatabaseId,
             tableId: selectedTableId,
             fieldId,
+            limit: scanLimit,
           },
         );
         const data = await response.json();
@@ -340,8 +347,13 @@ export default function BrainworksFiltering() {
 
   // Load More Button Handler
   const handleLoadMore = useCallback(() => {
-    exportMutation.mutate({ isLoadMore: true });
-  }, [exportMutation]);
+    // Increment the limit by FETCH_LIMIT (100,000)
+    const newLimit = scanLimit + FETCH_LIMIT;
+    setScanLimit(newLimit);
+
+    // Trigger fetch with the new limit immediately
+    exportMutation.mutate({ isLoadMore: true, overrideScanLimit: newLimit });
+  }, [exportMutation, scanLimit]);
 
   const handleRefreshCount = useCallback(() => {
     countMutation.mutate();
@@ -389,6 +401,10 @@ export default function BrainworksFiltering() {
       })
       .filter(Boolean) as MetabaseField[];
   }, [filters, fields]);
+
+  const hitScanLimit = (countMutation.data?.total || 0) >= scanLimit;
+  const showLoadMore =
+    hitScanLimit || (hasMoreData && exportedEntries.length > 0);
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -561,7 +577,7 @@ export default function BrainworksFiltering() {
           />
 
           {/* LOAD MORE BUTTON */}
-          {exportedEntries.length > 0 && hasMoreData && (
+          {showLoadMore && (
             <Button
               variant="outline"
               className="w-full"
@@ -574,7 +590,9 @@ export default function BrainworksFiltering() {
               ) : (
                 <ArrowDownCircle className="h-4 w-4 mr-2" />
               )}
-              Load More (+{FETCH_LIMIT.toLocaleString()})
+              {hitScanLimit
+                ? `Scan Next 100,000 Rows (Current Limit: ${scanLimit.toLocaleString()})`
+                : `Load More (+${FETCH_LIMIT.toLocaleString()})`}
             </Button>
           )}
 

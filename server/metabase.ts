@@ -7,6 +7,8 @@ import type {
   MailingListEntry,
 } from "@shared/schema";
 
+const ROW_LIMIT = 100000;
+
 function getMetabaseUrl(): string {
   const url = process.env.METABASE_URL || "";
   return url.replace(/\/+$/, "");
@@ -173,12 +175,16 @@ export async function getCount(
   databaseId: number,
   tableId: number,
   filters: FilterValue[],
+  limit: number = 100000, // Default limit
 ): Promise<{ count: number; total: number; percentage: number }> {
   const totalQuery = {
     database: databaseId,
     type: "query",
     query: {
-      "source-table": tableId,
+      "source-query": {
+        "source-table": tableId,
+        limit: limit, // Use dynamic limit
+      },
       aggregation: [["count"]],
     },
   };
@@ -202,7 +208,10 @@ export async function getCount(
     database: databaseId,
     type: "query",
     query: {
-      "source-table": tableId,
+      "source-query": {
+        "source-table": tableId,
+        limit: limit, // Use dynamic limit
+      },
       aggregation: [["count"]],
       filter: combinedFilter,
     },
@@ -223,12 +232,16 @@ export async function getFieldOptions(
   databaseId: number,
   tableId: number,
   fieldId: number,
+  limit: number = 100000, // Default limit
 ): Promise<FieldOption[]> {
   const query = {
     database: databaseId,
     type: "query",
     query: {
-      "source-table": tableId,
+      "source-query": {
+        "source-table": tableId,
+        limit: limit, // Use dynamic limit
+      },
       aggregation: [["count"]],
       breakout: [["field", fieldId, null]],
       "order-by": [["desc", ["aggregation", 0]]],
@@ -255,10 +268,12 @@ export async function getMailingList(
   tableId: number,
   filters: FilterValue[],
   limit: number = 1000,
-  offset: number = 0, // New offset parameter
+  offset: number = 0,
+  scanLimit: number = 100000, // New parameter for the source scope
 ): Promise<{ entries: MailingListEntry[]; total: number }> {
   const fields = await getFields(tableId);
 
+  // ... [Keep the existing field finding logic (nameFieldId, etc.)] ...
   const findField = (patterns: string[]): number | null => {
     for (const pattern of patterns) {
       const field = fields.find(
@@ -347,16 +362,17 @@ export async function getMailingList(
     database: databaseId,
     type: "query",
     query: {
-      "source-table": tableId,
+      "source-query": {
+        "source-table": tableId,
+        limit: scanLimit, // Use the scanLimit here
+      },
       fields: breakoutFields.map((id) => ["field", id, null]),
       limit,
     },
   };
 
   if (offset > 0) {
-    // Explicitly add offset to query logic if supported by MBQL driver
     (query.query as any).offset = offset;
-    // Also ensure top level limit is consistent
     query.query.limit = limit;
   }
 
@@ -369,6 +385,7 @@ export async function getMailingList(
     body: JSON.stringify(query),
   });
 
+  // ... [Keep the existing column mapping and entry creation logic] ...
   const rows = result.data?.rows ?? [];
   const cols = result.data?.cols ?? [];
 
@@ -430,7 +447,8 @@ export async function getMailingList(
         : "",
   }));
 
-  const countResult = await getCount(databaseId, tableId, filters);
+  // Pass scanLimit to getCount as well
+  const countResult = await getCount(databaseId, tableId, filters, scanLimit);
 
   return {
     entries,
