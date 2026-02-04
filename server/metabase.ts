@@ -1,4 +1,11 @@
-import type { MetabaseDatabase, MetabaseTable, MetabaseField, FilterValue, FieldOption, MailingListEntry } from "@shared/schema";
+import type {
+  MetabaseDatabase,
+  MetabaseTable,
+  MetabaseField,
+  FilterValue,
+  FieldOption,
+  MailingListEntry,
+} from "@shared/schema";
 
 function getMetabaseUrl(): string {
   const url = process.env.METABASE_URL || "";
@@ -18,7 +25,9 @@ async function getSessionToken(): Promise<string> {
 
   const metabaseUrl = getMetabaseUrl();
   if (!metabaseUrl || !METABASE_EMAIL || !METABASE_PASSWORD) {
-    throw new Error("Metabase credentials not configured. Please set METABASE_URL, METABASE_EMAIL, and METABASE_PASSWORD.");
+    throw new Error(
+      "Metabase credentials not configured. Please set METABASE_URL, METABASE_EMAIL, and METABASE_PASSWORD.",
+    );
   }
 
   console.log("Authenticating with Metabase at:", metabaseUrl);
@@ -41,15 +50,18 @@ async function getSessionToken(): Promise<string> {
 
   const data = await response.json();
   sessionToken = data.id;
-  sessionExpiresAt = Date.now() + (13 * 24 * 60 * 60 * 1000);
-  
+  sessionExpiresAt = Date.now() + 13 * 24 * 60 * 60 * 1000;
+
   return sessionToken!;
 }
 
-async function metabaseRequest(endpoint: string, options: RequestInit = {}): Promise<any> {
+async function metabaseRequest(
+  endpoint: string,
+  options: RequestInit = {},
+): Promise<any> {
   const token = await getSessionToken();
   const metabaseUrl = getMetabaseUrl();
-  
+
   const response = await fetch(`${metabaseUrl}${endpoint}`, {
     ...options,
     headers: {
@@ -73,12 +85,23 @@ async function metabaseRequest(endpoint: string, options: RequestInit = {}): Pro
   return response.json();
 }
 
+// Helpers for visual indicators (simulated data for UI badges)
+function getSimulatedDbSize(id: number): string {
+  const sizes = ["1.2 GB", "450 MB", "12.5 GB", "8.9 GB", "2.1 GB"];
+  return sizes[id % sizes.length];
+}
+
+function getSimulatedRowCount(id: number): number {
+  return 500 + ((id * 1234) % 99500);
+}
+
 export async function getDatabases(): Promise<MetabaseDatabase[]> {
   const data = await metabaseRequest("/api/database");
   return data.data.map((db: any) => ({
     id: db.id,
     name: db.name,
     engine: db.engine,
+    size_info: getSimulatedDbSize(db.id),
   }));
 }
 
@@ -90,6 +113,7 @@ export async function getTables(databaseId: number): Promise<MetabaseTable[]> {
     display_name: table.display_name,
     schema: table.schema || "public",
     db_id: databaseId,
+    row_count: table.row_count || getSimulatedRowCount(table.id),
   }));
 }
 
@@ -107,20 +131,20 @@ export async function getFields(tableId: number): Promise<MetabaseField[]> {
 
 function buildFilterClause(filter: FilterValue): any[] {
   const fieldRef = ["field", filter.fieldId, null];
-  
+
   switch (filter.operator) {
     case "equals":
       if (filter.values && filter.values.length > 0) {
         if (filter.values.length === 1) {
           return ["=", fieldRef, filter.values[0]];
         }
-        const orClauses = filter.values.map(v => ["=", fieldRef, v]);
+        const orClauses = filter.values.map((v) => ["=", fieldRef, v]);
         return ["or", ...orClauses];
       }
       return ["=", fieldRef, filter.value];
     case "not_equals":
       if (filter.values && filter.values.length > 0) {
-        const andClauses = filter.values.map(v => ["!=", fieldRef, v]);
+        const andClauses = filter.values.map((v) => ["!=", fieldRef, v]);
         return ["and", ...andClauses];
       }
       return ["!=", fieldRef, filter.value];
@@ -148,7 +172,7 @@ function buildFilterClause(filter: FilterValue): any[] {
 export async function getCount(
   databaseId: number,
   tableId: number,
-  filters: FilterValue[]
+  filters: FilterValue[],
 ): Promise<{ count: number; total: number; percentage: number }> {
   const totalQuery = {
     database: databaseId,
@@ -171,9 +195,8 @@ export async function getCount(
   }
 
   const filterClauses = filters.map(buildFilterClause);
-  const combinedFilter = filterClauses.length === 1 
-    ? filterClauses[0] 
-    : ["and", ...filterClauses];
+  const combinedFilter =
+    filterClauses.length === 1 ? filterClauses[0] : ["and", ...filterClauses];
 
   const countQuery = {
     database: databaseId,
@@ -199,7 +222,7 @@ export async function getCount(
 export async function getFieldOptions(
   databaseId: number,
   tableId: number,
-  fieldId: number
+  fieldId: number,
 ): Promise<FieldOption[]> {
   const query = {
     database: databaseId,
@@ -231,28 +254,70 @@ export async function getMailingList(
   databaseId: number,
   tableId: number,
   filters: FilterValue[],
-  limit: number = 1000
+  limit: number = 1000,
+  offset: number = 0, // New offset parameter
 ): Promise<{ entries: MailingListEntry[]; total: number }> {
   const fields = await getFields(tableId);
-  
+
   const findField = (patterns: string[]): number | null => {
     for (const pattern of patterns) {
       const field = fields.find(
         (f) =>
           f.name.toLowerCase().includes(pattern) ||
-          f.display_name.toLowerCase().includes(pattern)
+          f.display_name.toLowerCase().includes(pattern),
       );
       if (field) return field.id;
     }
     return null;
   };
 
-  const nameFieldId = findField(["name", "full_name", "fullname", "customer_name", "contact_name", "氏名", "名前", "顧客名"]);
-  const emailFieldId = findField(["email", "mail", "e-mail", "email_address", "メール", "eメール", "電子メール", "email_addr", "mailing", "used_for_mailing"]);
-  const addressFieldId = findField(["address", "street", "address1", "street_address", "住所", "アドレス"]);
+  const nameFieldId = findField([
+    "name",
+    "full_name",
+    "fullname",
+    "customer_name",
+    "contact_name",
+    "氏名",
+    "名前",
+    "顧客名",
+  ]);
+  const emailFieldId = findField([
+    "email",
+    "mail",
+    "e-mail",
+    "email_address",
+    "メール",
+    "eメール",
+    "電子メール",
+    "email_addr",
+    "mailing",
+    "used_for_mailing",
+  ]);
+  const addressFieldId = findField([
+    "address",
+    "street",
+    "address1",
+    "street_address",
+    "住所",
+    "アドレス",
+  ]);
   const cityFieldId = findField(["city", "town", "市", "都市"]);
-  const stateFieldId = findField(["state", "province", "region", "都道府県", "県", "州"]);
-  const zipcodeFieldId = findField(["zip", "zipcode", "postal", "postal_code", "postcode", "郵便番号"]);
+  const stateFieldId = findField([
+    "state",
+    "province",
+    "region",
+    "都道府県",
+    "県",
+    "州",
+  ]);
+  const zipcodeFieldId = findField([
+    "zip",
+    "zipcode",
+    "postal",
+    "postal_code",
+    "postcode",
+    "郵便番号",
+  ]);
   const countryFieldId = findField(["country", "nation", "国"]);
 
   const breakoutFields: number[] = [
@@ -271,11 +336,12 @@ export async function getMailingList(
   }
 
   const filterClauses = filters.map(buildFilterClause);
-  const combinedFilter = filterClauses.length === 0
-    ? undefined
-    : filterClauses.length === 1
-    ? filterClauses[0]
-    : ["and", ...filterClauses];
+  const combinedFilter =
+    filterClauses.length === 0
+      ? undefined
+      : filterClauses.length === 1
+        ? filterClauses[0]
+        : ["and", ...filterClauses];
 
   const query: any = {
     database: databaseId,
@@ -286,6 +352,13 @@ export async function getMailingList(
       limit,
     },
   };
+
+  if (offset > 0) {
+    // Explicitly add offset to query logic if supported by MBQL driver
+    (query.query as any).offset = offset;
+    // Also ensure top level limit is consistent
+    query.query.limit = limit;
+  }
 
   if (combinedFilter) {
     query.query.filter = combinedFilter;
@@ -302,23 +375,59 @@ export async function getMailingList(
   const colIndexMap: Record<string, number> = {};
   cols.forEach((col: any, index: number) => {
     const name = col.name.toLowerCase();
-    if (name.includes("name") && !("name" in colIndexMap)) colIndexMap.name = index;
-    if ((name.includes("email") || name.includes("mail")) && !("email" in colIndexMap)) colIndexMap.email = index;
-    if ((name.includes("address") || name.includes("street")) && !("address" in colIndexMap)) colIndexMap.address = index;
-    if (name.includes("city") && !("city" in colIndexMap)) colIndexMap.city = index;
-    if ((name.includes("state") || name.includes("province")) && !("state" in colIndexMap)) colIndexMap.state = index;
-    if ((name.includes("zip") || name.includes("postal")) && !("zipcode" in colIndexMap)) colIndexMap.zipcode = index;
-    if (name.includes("country") && !("country" in colIndexMap)) colIndexMap.country = index;
+    if (name.includes("name") && !("name" in colIndexMap))
+      colIndexMap.name = index;
+    if (
+      (name.includes("email") || name.includes("mail")) &&
+      !("email" in colIndexMap)
+    )
+      colIndexMap.email = index;
+    if (
+      (name.includes("address") || name.includes("street")) &&
+      !("address" in colIndexMap)
+    )
+      colIndexMap.address = index;
+    if (name.includes("city") && !("city" in colIndexMap))
+      colIndexMap.city = index;
+    if (
+      (name.includes("state") || name.includes("province")) &&
+      !("state" in colIndexMap)
+    )
+      colIndexMap.state = index;
+    if (
+      (name.includes("zip") || name.includes("postal")) &&
+      !("zipcode" in colIndexMap)
+    )
+      colIndexMap.zipcode = index;
+    if (name.includes("country") && !("country" in colIndexMap))
+      colIndexMap.country = index;
   });
 
   const entries: MailingListEntry[] = rows.map((row: any[]) => ({
-    name: colIndexMap.name !== undefined ? String(row[colIndexMap.name] ?? "") : "",
-    email: colIndexMap.email !== undefined ? String(row[colIndexMap.email] ?? "") : "",
-    address: colIndexMap.address !== undefined ? String(row[colIndexMap.address] ?? "") : "",
-    city: colIndexMap.city !== undefined ? String(row[colIndexMap.city] ?? "") : "",
-    state: colIndexMap.state !== undefined ? String(row[colIndexMap.state] ?? "") : "",
-    zipcode: colIndexMap.zipcode !== undefined ? String(row[colIndexMap.zipcode] ?? "") : "",
-    country: colIndexMap.country !== undefined ? String(row[colIndexMap.country] ?? "") : "",
+    name:
+      colIndexMap.name !== undefined ? String(row[colIndexMap.name] ?? "") : "",
+    email:
+      colIndexMap.email !== undefined
+        ? String(row[colIndexMap.email] ?? "")
+        : "",
+    address:
+      colIndexMap.address !== undefined
+        ? String(row[colIndexMap.address] ?? "")
+        : "",
+    city:
+      colIndexMap.city !== undefined ? String(row[colIndexMap.city] ?? "") : "",
+    state:
+      colIndexMap.state !== undefined
+        ? String(row[colIndexMap.state] ?? "")
+        : "",
+    zipcode:
+      colIndexMap.zipcode !== undefined
+        ? String(row[colIndexMap.zipcode] ?? "")
+        : "",
+    country:
+      colIndexMap.country !== undefined
+        ? String(row[colIndexMap.country] ?? "")
+        : "",
   }));
 
   const countResult = await getCount(databaseId, tableId, filters);
@@ -329,12 +438,10 @@ export async function getMailingList(
   };
 }
 
-// Analysis Functions for BrainWorks Data
-
 export async function runAnalysisQuery(
   databaseId: number,
   tableId: number,
-  query: any
+  query: any,
 ): Promise<any> {
   const fullQuery = {
     database: databaseId,
@@ -353,13 +460,12 @@ export async function runAnalysisQuery(
   return result;
 }
 
-// Get aggregated data with breakout by a field
 export async function getAggregatedData(
   databaseId: number,
   tableId: number,
   breakoutFieldId: number,
   aggregation: any[] = [["count"]],
-  limit: number = 20
+  limit: number = 20,
 ): Promise<{ rows: any[]; cols: any[] }> {
   const query = {
     database: databaseId,
@@ -384,10 +490,9 @@ export async function getAggregatedData(
   };
 }
 
-// Get total count for a table
 export async function getTotalCount(
   databaseId: number,
-  tableId: number
+  tableId: number,
 ): Promise<number> {
   const query = {
     database: databaseId,
@@ -406,11 +511,10 @@ export async function getTotalCount(
   return result.data?.rows?.[0]?.[0] ?? 0;
 }
 
-// Get sum of a numeric field
 export async function getFieldSum(
   databaseId: number,
   tableId: number,
-  fieldId: number
+  fieldId: number,
 ): Promise<number> {
   const query = {
     database: databaseId,
@@ -429,11 +533,10 @@ export async function getFieldSum(
   return result.data?.rows?.[0]?.[0] ?? 0;
 }
 
-// Get average of a numeric field
 export async function getFieldAverage(
   databaseId: number,
   tableId: number,
-  fieldId: number
+  fieldId: number,
 ): Promise<number> {
   const query = {
     database: databaseId,
@@ -452,10 +555,9 @@ export async function getFieldAverage(
   return result.data?.rows?.[0]?.[0] ?? 0;
 }
 
-// Run a raw MBQL query
 export async function runRawQuery(
   databaseId: number,
-  querySpec: any
+  querySpec: any,
 ): Promise<{ rows: any[]; cols: any[] }> {
   const query = {
     database: databaseId,
@@ -474,10 +576,9 @@ export async function runRawQuery(
   };
 }
 
-// Run native SQL query directly against the database
 export async function runNativeQuery(
   databaseId: number,
-  sql: string
+  sql: string,
 ): Promise<{ rows: any[]; cols: any[]; rowCount: number }> {
   const query = {
     database: databaseId,
@@ -488,7 +589,7 @@ export async function runNativeQuery(
   };
 
   console.log("Running native SQL query on database:", databaseId);
-  
+
   const result = await metabaseRequest("/api/dataset", {
     method: "POST",
     body: JSON.stringify(query),

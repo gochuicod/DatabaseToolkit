@@ -10,6 +10,7 @@ import {
   Check,
   ChevronDown,
   Loader2,
+  ArrowDownCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,7 +50,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useDebounce } from "@/hooks/use-debounce";
 import { ResultsPanel } from "@/components/results-panel";
 import { ExportDialog } from "@/components/export-dialog";
-// Import the DatabaseSelector component
 import { DatabaseSelector } from "@/components/database-selector";
 import { apiRequest } from "@/lib/queryClient";
 import {
@@ -68,6 +68,9 @@ import type {
   MailingListEntry,
   FilterOperator,
 } from "@shared/schema";
+
+// CONSTANT: Hard limit for fetches set to 1,000,000 as requested
+const FETCH_LIMIT = 1000000;
 
 export default function BrainworksFiltering() {
   const { toast } = useToast();
@@ -90,6 +93,9 @@ export default function BrainworksFiltering() {
   const [exportedTotal, setExportedTotal] = useState(0);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
 
+  // State for "Load More" functionality
+  const [hasMoreData, setHasMoreData] = useState<boolean>(true);
+
   const debouncedFilters = useDebounce(filters, 300);
 
   const {
@@ -100,7 +106,6 @@ export default function BrainworksFiltering() {
     queryKey: ["/api/metabase/databases"],
   });
 
-  // Auto-select BrainWorks Data database initially, but allow changes
   useEffect(() => {
     if (databases.length > 0 && !selectedDatabaseId) {
       const brainworksDb = databases.find(
@@ -123,7 +128,6 @@ export default function BrainworksFiltering() {
     enabled: !!selectedDatabaseId,
   });
 
-  // Auto-select first table when tables load (if none selected)
   useEffect(() => {
     if (tables.length > 0 && !selectedTableId) {
       setSelectedTableId(tables[0].id);
@@ -166,37 +170,59 @@ export default function BrainworksFiltering() {
     },
   });
 
-  const exportMutation = useMutation<{
-    entries: MailingListEntry[];
-    total: number;
-  }>({
-    mutationFn: async () => {
+  // Export mutation handles limit and offset
+  const exportMutation = useMutation<
+    { entries: MailingListEntry[]; total: number },
+    Error,
+    { isLoadMore?: boolean }
+  >({
+    mutationFn: async ({ isLoadMore = false }) => {
       if (!selectedDatabaseId || !selectedTableId) {
         throw new Error("Please select a table first");
       }
+
+      const offsetToUse = isLoadMore ? exportedEntries.length : 0;
+
       const response = await apiRequest("POST", "/api/metabase/export", {
         databaseId: selectedDatabaseId,
         tableId: selectedTableId,
         filters: Object.values(filters),
+        limit: FETCH_LIMIT,
+        offset: offsetToUse,
       });
       return response.json();
     },
-    onSuccess: (data) => {
-      setExportedEntries(data.entries);
-      setExportedTotal(data.total);
-      setExportDialogOpen(true);
-      toast({
-        title: "Mailing list generated",
-        description: `Successfully exported ${data.total.toLocaleString()} contacts`,
-      });
+    onSuccess: (data, variables) => {
+      if (variables.isLoadMore) {
+        // Append new entries
+        setExportedEntries((prev) => [...prev, ...data.entries]);
+        toast({
+          title: "More rows loaded",
+          description: `Added ${data.entries.length.toLocaleString()} rows. Total: ${(exportedEntries.length + data.entries.length).toLocaleString()}`,
+        });
+      } else {
+        // Replace entries (New fetch)
+        setExportedEntries(data.entries);
+        setExportedTotal(data.total);
+        setExportDialogOpen(true);
+        toast({
+          title: "Data loaded",
+          description: `Loaded first ${data.entries.length.toLocaleString()} rows`,
+        });
+      }
+
+      // Check if we reached the end (if returned data is less than limit, no more data)
+      if (data.entries.length < FETCH_LIMIT) {
+        setHasMoreData(false);
+      } else {
+        setHasMoreData(true);
+      }
     },
     onError: (error) => {
       toast({
-        title: "Export failed",
+        title: "Fetch failed",
         description:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate mailing list",
+          error instanceof Error ? error.message : "Failed to generate list",
         variant: "destructive",
       });
     },
@@ -208,20 +234,22 @@ export default function BrainworksFiltering() {
     }
   }, [selectedDatabaseId, selectedTableId, debouncedFilters]);
 
-  // Reset filters when table changes
+  // Reset logic when table changes
   useEffect(() => {
     if (selectedTableId) {
       setFilters({});
       setFieldOptions({});
+      setExportedEntries([]);
+      setHasMoreData(true);
     }
   }, [selectedTableId]);
 
-  // Handle changing the database
   const handleDatabaseChange = useCallback((id: number) => {
     setSelectedDatabaseId(id);
-    setSelectedTableId(null); // Clear table selection when DB changes
-    setFilters({}); // Clear filters
-    setFieldOptions({}); // Clear options
+    setSelectedTableId(null);
+    setFilters({});
+    setFieldOptions({});
+    setExportedEntries([]);
   }, []);
 
   const handleTableChange = useCallback((id: number) => {
@@ -304,8 +332,15 @@ export default function BrainworksFiltering() {
     ],
   );
 
+  // Initial Fetch
   const handleExport = useCallback(() => {
-    exportMutation.mutate();
+    setHasMoreData(true);
+    exportMutation.mutate({ isLoadMore: false });
+  }, [exportMutation]);
+
+  // Load More Button Handler
+  const handleLoadMore = useCallback(() => {
+    exportMutation.mutate({ isLoadMore: true });
   }, [exportMutation]);
 
   const handleRefreshCount = useCallback(() => {
@@ -314,12 +349,10 @@ export default function BrainworksFiltering() {
 
   const hasConnectionError = databasesError !== null;
 
-  // Get fields not yet added as filters
   const availableFields = useMemo(() => {
     return fields.filter((f) => !filters[f.id]);
   }, [fields, filters]);
 
-  // Group available fields by type for the command menu
   const groupedAvailableFields = useMemo(() => {
     const groups: Record<string, MetabaseField[]> = {
       Text: [],
@@ -327,7 +360,6 @@ export default function BrainworksFiltering() {
       Date: [],
       Other: [],
     };
-
     availableFields.forEach((field) => {
       if (field.base_type.includes("Text")) {
         groups.Text.push(field);
@@ -347,7 +379,6 @@ export default function BrainworksFiltering() {
         groups.Other.push(field);
       }
     });
-
     return groups;
   }, [availableFields]);
 
@@ -396,7 +427,6 @@ export default function BrainworksFiltering() {
         </Alert>
       )}
 
-      {/* Database & Table Selector */}
       <DatabaseSelector
         databases={databases}
         tables={tables}
@@ -409,7 +439,6 @@ export default function BrainworksFiltering() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
-        {/* Filters Section */}
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
@@ -421,7 +450,6 @@ export default function BrainworksFiltering() {
               )}
             </div>
 
-            {/* Add Filter Button */}
             <Popover open={addFilterOpen} onOpenChange={setAddFilterOpen}>
               <PopoverTrigger asChild>
                 <Button
@@ -469,7 +497,6 @@ export default function BrainworksFiltering() {
             </Popover>
           </div>
 
-          {/* Active Filters */}
           {isLoadingFields ? (
             <Card>
               <CardContent className="py-12 text-center">
@@ -520,8 +547,7 @@ export default function BrainworksFiltering() {
           )}
         </div>
 
-        {/* Results Panel */}
-        <div>
+        <div className="space-y-4">
           <ResultsPanel
             count={countMutation.data ?? null}
             isLoading={countMutation.isPending}
@@ -529,8 +555,34 @@ export default function BrainworksFiltering() {
             onRemoveFilter={handleRemoveFilter}
             onClearAll={handleClearAllFilters}
             onExport={handleExport}
-            isExporting={exportMutation.isPending}
+            isExporting={
+              exportMutation.isPending && !exportMutation.variables?.isLoadMore
+            }
           />
+
+          {/* LOAD MORE BUTTON */}
+          {exportedEntries.length > 0 && hasMoreData && (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleLoadMore}
+              disabled={exportMutation.isPending}
+            >
+              {exportMutation.isPending &&
+              exportMutation.variables?.isLoadMore ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <ArrowDownCircle className="h-4 w-4 mr-2" />
+              )}
+              Load More (+{FETCH_LIMIT.toLocaleString()})
+            </Button>
+          )}
+
+          {exportedEntries.length > 0 && (
+            <div className="text-xs text-center text-muted-foreground">
+              Currently loaded: {exportedEntries.length.toLocaleString()} rows
+            </div>
+          )}
         </div>
       </div>
 
@@ -678,7 +730,6 @@ function ActiveFilterCard({
       </CardHeader>
       <CardContent className="p-4 pt-2">
         <div className="flex flex-wrap gap-3">
-          {/* Operator Select */}
           <div className="min-w-[140px]">
             <Label className="text-xs text-muted-foreground mb-1.5 block">
               Condition
@@ -705,7 +756,6 @@ function ActiveFilterCard({
             </Select>
           </div>
 
-          {/* Value Input */}
           {showValueInput && (
             <div className="flex-1 min-w-[200px]">
               <Label className="text-xs text-muted-foreground mb-1.5 block">
@@ -801,7 +851,6 @@ function ActiveFilterCard({
             </div>
           )}
 
-          {/* To Value for Between */}
           {showBetween && showValueInput && (
             <div className="min-w-[150px]">
               <Label className="text-xs text-muted-foreground mb-1.5 block">

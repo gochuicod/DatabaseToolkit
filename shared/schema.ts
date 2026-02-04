@@ -4,7 +4,9 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
 });
@@ -22,6 +24,8 @@ export interface MetabaseDatabase {
   id: number;
   name: string;
   engine: string;
+  size_info?: string; // Optional: Added size info
+  table_count?: number; // Optional
 }
 
 export interface MetabaseTable {
@@ -30,6 +34,7 @@ export interface MetabaseTable {
   display_name: string;
   schema: string;
   db_id: number;
+  row_count?: number; // Optional: Added row count
 }
 
 export interface MetabaseField {
@@ -42,14 +47,14 @@ export interface MetabaseField {
 }
 
 // Filter Types
-export type FilterOperator = 
-  | "equals" 
-  | "not_equals" 
-  | "contains" 
-  | "starts_with" 
+export type FilterOperator =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "starts_with"
   | "ends_with"
-  | "greater_than" 
-  | "less_than" 
+  | "greater_than"
+  | "less_than"
   | "between"
   | "is_null"
   | "is_not_null";
@@ -110,7 +115,7 @@ export const filterValueSchema = z.object({
   fieldDisplayName: z.string(),
   operator: z.enum([
     "equals",
-    "not_equals", 
+    "not_equals",
     "contains",
     "starts_with",
     "ends_with",
@@ -118,7 +123,7 @@ export const filterValueSchema = z.object({
     "less_than",
     "between",
     "is_null",
-    "is_not_null"
+    "is_not_null",
   ]),
   value: z.union([z.string(), z.number(), z.null()]),
   values: z.array(z.union([z.string(), z.number()])).optional(),
@@ -137,11 +142,13 @@ export const fieldOptionsQuerySchema = z.object({
   fieldId: z.number(),
 });
 
+// UPDATED: Added offset support
 export const exportQuerySchema = z.object({
   databaseId: z.number(),
   tableId: z.number(),
   filters: z.array(filterValueSchema),
   limit: z.number().optional().default(1000),
+  offset: z.number().optional().default(0), // Added offset
 });
 
 export type FiltersQuery = z.infer<typeof countQuerySchema>;
