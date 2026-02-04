@@ -1,0 +1,55 @@
+### **1. RFM Segmentation (Baseline Model)**
+
+- **Why:** Mail cost is fixed, so target only the top segments (Champions, Loyal, At Risk).
+- **How:** Score each BOID with Recency, Frequency, Monetary.
+- **Mailing List Use:**
+    - **High RFM** → Always mail (they respond).
+    - **Medium RFM** → Selectively mail (e.g., only during campaigns with high historical ROI).
+    - **Low RFM** → Suppress (save cost).
+
+### **2. Campaign Response Model (Per Market/Product)**
+
+- **Why:** Some campaigns or products simply perform better in some markets.
+- **How:** Join Campaign_mailed + Purchase_History to measure conversion per Market x Campaign x Product.
+- **Mailing List Use:**
+    - Only run campaigns in markets with proven **conversion lift**.
+    - Drop markets with **consistent low response**.
+
+### **3. Propensity-to-Respond Model**
+
+- **Why:** Mailing costs money → score each customer with probability of purchase if mailed.
+- **How:** Logistic regression / tree models using demographics, RFM, campaign history.
+- **Mailing List Use:**
+    - Sort customers by score.
+    - Set a cutoff based on budget (e.g., only mail top 40% most likely to respond).
+
+### **4. Reactivation Model**
+
+- **Why:** You don’t want to waste on long-term inactive customers *unless* they were historically valuable.
+- **How:** Identify customers with high LTV but no purchase in 12+ months.
+- **Mailing List Use:**
+    - Send **“Win-back” campaigns** only to dormant but high-value customers.
+    - Suppress “low-value inactive” → save cost.
+
+### **5. Prospect Lookalike Model**
+
+- **Why:** You have prospects (in Campaign_mailed) who never bought. Some may still be good bets.
+- **How:** Build a “lookalike” model → compare profiles of actual buyers vs non-buyers.
+- **Mailing List Use:**
+    - Only mail prospects that **look similar** to your top buyers.
+    - Avoid blind mailing to all prospects.
+
+### **6. Product Affinity / Upsell Model**
+
+- **Why:** If someone bought Product A, they’re more likely to buy Product B (e.g., basket analysis).
+- **How:** Use Purchase_History to map product associations.
+- **Mailing List Use:**
+    - Mail **cross-sell campaigns** only to customers with matching purchase history.
+
+### **7. ROI Optimization Model**
+
+- **Why:** Each mailer has a cost → not all campaigns generate enough revenue to justify mailing everyone.
+- **How:** Calculate ROI per campaign (Revenue from mailers ÷ Cost of mailers).
+- **Mailing List Use:**
+    - Focus on campaigns where ROI > 1.5x or 2x.
+    - Reduce mailers on low-ROI campaigns.

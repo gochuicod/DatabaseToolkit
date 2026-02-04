@@ -1,0 +1,54 @@
+Based on your screenshot and the issue you are facing ("AI does not correctly return a list... with actual emails"), here is the diagnosis and the fix.
+
+You are currently asking the AI to act as the database. This almost never works for specific data retrieval (like pulling 5,000 real emails) because LLMs are text generators, not query engines. They hallucinate data or simply don't have access to the actual rows due to token limits.
+
+The Answer: Do NOT let AI handle the "whole database context."
+You should switch to an "AI-Assisted Table Selection" model.
+
+Here is why your current setup is failing and how to fix the architecture:
+
+1. Why it's failing (The "Black Box" Problem)
+The Error: You are likely feeding the AI a prompt like "Here is my database, find users for a test campaign."
+
+The Limitation: The AI cannot "see" the 5,000 rows in your database unless you feed them all into the text prompt (which is expensive, slow, and hits token limits).
+
+The Result: The AI guesses. It returns "N/A" or made-up names because it doesn't actually have the email string in its short-term memory.
+
+2. The Solution: AI as a "Query Builder" (Not a Database)
+Don't ask the AI to return the emails. Ask the AI to write the code that finds the emails.
+
+The Workflow you need:
+
+Input: User types "Campaign for users who signed up last month."
+
+AI Step: The AI analyzes your Schema (not the data).
+
+AI Input: "Here are my table names: users, orders..."
+
+AI Output: "I should query the users table where created_at > '2023-12-01'."
+
+System Step: Your app takes that filter/query and runs it against the real database (Astro DB / PocketBase).
+
+UI Result: The App (not the AI) displays the real list of emails in the "Preview" section.
+
+3. Recommended UI Changes
+You should modify your interface to expose the "Table Selection" but make it smart.
+
+Add a "Targeting Logic" Section: Instead of just "AI Suggestions" text, have the AI output a structured filter that the user can see and edit.
+
+Example UI Flow:
+
+User Input: "Test campaign for new users"
+
+AI Action: Automatically selects the Users table and fills a "Filter" box with status = 'active' && signup_date > '2024-01-01'.
+
+User Action: The user sees this logic, confirms it looks right, and then the Preview list populates with real data from the DB.
+
+Final Verdict
+Do not hide the Table Selection.
+
+Manual Selection: Keep the dropdown.
+
+AI Automation: Use the AI to auto-select the right table and pre-fill the filters based on the text description.
+
+This gives you the speed of AI but the accuracy of a real database query (ensuring you actually get the emails).

@@ -1,0 +1,61 @@
+I need to completely refactor the backend for the Trends & ICP Analysis module. We are querying a database with over 17 million rows, so we must be extremely careful with memory and performance.
+
+Core Requirement: Do not use AI to count or calculate data. Use the database engine.
+
+Please implement two specific API endpoints that run the following optimized SQL queries directly against the GalaxyMaster database. Do not fetch all rows; run these exact queries:
+
+Endpoint 1: /api/analysis/snapshot (For Trend/Overlap) Use this exact SQL query to get the cross-sell overlap:
+
+SQL
+SELECT 
+    COUNT(*) as Total_Customers,
+    SUM(CASE WHEN GL_LTV > 0 THEN 1 ELSE 0 END) as GL_Buyers,
+    SUM(CASE WHEN TSI_LTV > 0 THEN 1 ELSE 0 END) as TSI_Buyers,
+    SUM(CASE WHEN SY_LTV > 0 THEN 1 ELSE 0 END) as SY_Buyers,
+    SUM(CASE WHEN MD_LTV > 0 THEN 1 ELSE 0 END) as MD_Buyers,
+    SUM(CASE WHEN GL_LTV > 0 AND TSI_LTV > 0 THEN 1 ELSE 0 END) as GL_and_TSI_Overlap,
+    SUM(CASE WHEN GL_LTV > 0 AND MD_LTV > 0 THEN 1 ELSE 0 END) as GL_and_MD_Overlap,
+    SUM(CASE WHEN SY_LTV > 0 AND GL_LTV > 0 THEN 1 ELSE 0 END) as SY_and_GL_Overlap
+FROM GalaxyMaster.dbo.galaxy_individual;
+Endpoint 2: /api/analysis/icp (For Segments) Use this exact SQL query to identify top segments (limited to top 50 to save memory):
+
+SQL
+SELECT TOP 50
+    ISNULL(gender, 'Unknown') AS Gender,
+    CASE 
+        WHEN ddob IS NULL THEN 'Unknown'
+        WHEN DATEDIFF(year, ddob, GETDATE()) < 30 THEN 'Under 30'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 30 AND 39 THEN '30-39'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 40 AND 49 THEN '40-49'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 50 AND 59 THEN '50-59'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 60 AND 69 THEN '60-69'
+        WHEN DATEDIFF(year, ddob, GETDATE()) >= 70 THEN '70+'
+        ELSE 'Unknown' 
+    END AS AgeGroup,
+    ISNULL(prefecture, 'Unknown') AS Location,
+    COUNT(*) AS CustomerCount,
+    AVG(
+        ISNULL(CAST(GL_LTV AS MONEY), 0) + 
+        ISNULL(CAST(TSI_LTV AS MONEY), 0) + 
+        ISNULL(CAST(SY_LTV AS MONEY), 0) + 
+        ISNULL(CAST(MD_LTV AS MONEY), 0)
+    ) AS Avg_Total_LTV,
+    SUM(CASE WHEN Mobile = 1 THEN 1 ELSE 0 END) AS Has_Mobile,
+    SUM(CASE WHEN Email = 1 THEN 1 ELSE 0 END) AS Has_Email
+FROM GalaxyMaster.dbo.galaxy_individual
+WHERE ddob IS NOT NULL
+GROUP BY 
+    gender, 
+    prefecture,
+    CASE 
+        WHEN ddob IS NULL THEN 'Unknown'
+        WHEN DATEDIFF(year, ddob, GETDATE()) < 30 THEN 'Under 30'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 30 AND 39 THEN '30-39'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 40 AND 49 THEN '40-49'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 50 AND 59 THEN '50-59'
+        WHEN DATEDIFF(year, ddob, GETDATE()) BETWEEN 60 AND 69 THEN '60-69'
+        WHEN DATEDIFF(year, ddob, GETDATE()) >= 70 THEN '70+'
+        ELSE 'Unknown' 
+    END
+ORDER BY Avg_Total_LTV DESC;
+Return the results of these queries as JSON.

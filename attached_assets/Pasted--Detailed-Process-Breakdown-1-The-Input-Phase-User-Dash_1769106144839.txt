@@ -1,0 +1,55 @@
+### Detailed Process Breakdown
+
+### 1. The Input Phase (User & Dashboard UI)
+
+You start on the Replit dashboard. You enter two types of information:
+
+- **The "Fuzzy" Input (Concept):** You paste a description like: *"We are running a 'Sakura Season' early bird travel promotion. It's focused on luxury travel packages for older demographics interested in cultural events."* You might attach a PDF draft of the email
+- **The "Hard" Filters (Explicit Constraints):**
+    - *Birthday Filter:* e.g., "Contacts with birthdays next month."
+    - *Safety Filter:* e.g., "Exclude anyone sent an email in the last 7 days." (Crucial for safety).
+    - *Cap:* e.g., "I only need 5,000 contacts."
+
+### 2. The AI Analysis Phase (The "Brain")
+
+The Replit backend takes your "Sakura Season" concept description and sends it to an LLM (like OpenAI's GPT-4o model via API).
+
+The AI's job is **NOT** to write SQL. The AI's job is to understand marketing intent and map it to available data tags
+
+- *Input to AI:* "Concept: Sakura Season luxury travel for older demographic interested in culture."
+- *AI Processing:* The AI knows your DB schema (it knows you have segments, sources, and age data). It reasons: "Sakura implies travel interest. Luxury implies high-value segments. Older demographic implies age filtering."
+- *AI Output (JSON criteria):* The AI returns structured suggestions back to Replit, perhaps looking like this:JSON
+    
+    `{
+      "suggested_segments": ["Travel_Interest", "High_Net_Worth", "Cultural_Events_List"],
+      "suggested_age_range": ">50",
+      "reasoning": "Based on 'luxury' and 'older demographic' keywords."
+    }`
+    
+
+### 3. The Query Orchestration (The "Bridge")
+
+This is the most complex part of the Replit backend code. It acts as the bridge between the AI's suggestions and the rigid reality of the database
+
+It receives:
+
+1. AI suggested criteria (Segments like "Travel", Age > 50)
+2. Your hard filters (Exclude sent last 7 days, Birthday next month)
+3. Your limit (Max 5,000)
+
+It builds a complex SQL query that performs a `JOIN` between the two tables:
+
+- **Start with Table 1 (Master List):** Filter by the birthdays and the AI-suggested segments/ages
+- **JOIN with Table 2 (History):** Check the behavior log. If the filter is "Exclude recently sent," it removes anyone found in Table 2 with a `SentDate` in the last 7 days
+- *Optional Advanced Behavior:* If you asked the AI to find "highly engaged users," it might look into Table 2 for users where `Opened = True` frequently in the past
+
+### 4. Data Processing & Preview
+
+The database returns perhaps 12,000 raw candidates that match criteria
+
+- **Ranking/Capping:** Since you only asked for 5,000, the system needs to pick the *best* 5,000. The backend might prioritize them based on past engagement score (calculated from the History table) to ensure the most effective list is chosen first
+- **Preview:** The dashboard shows you a sample (e.g., the first 50 rows) and summary stats (e.g., "Found 5,000 contacts matching 'Sakura' criteria, excluding 450 who received emails this week")
+
+### 5. Safe Export
+
+Once satisfied with the preview, you click export. Replit generates the final CSV of the 5,000 contacts tailored exactly to that specific campaign concept

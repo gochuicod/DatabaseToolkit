@@ -1,0 +1,227 @@
+### **PART 1: CAMPAIGN PERFORMANCE ANALYSIS (1–20)**
+
+1. Campaign response rate (% of customers who purchased after a mailer)
+2. Average revenue per campaign
+3. Conversion rate by campaign
+4. Revenue per mailed customer
+5. Average time from mail date to purchase
+6. Highest-grossing campaigns
+7. Product performance per campaign
+8. Repeat purchase rate after campaign
+9. Campaign ROI (Revenue / Cost)
+10. % of total sales driven by mailers
+11. Campaign open rate proxy (if any response = engagement)
+12. Delivery delay vs. response delay analysis
+13. Campaign fatigue (declining response over repeated campaigns)
+14. Campaign reach by ZIP code
+15. Segment-wise campaign effectiveness (e.g., by gender or age)
+16. Campaigns that triggered multiple purchases
+17. Response curves (time-based) for each campaign
+18. Average orders per respondent per campaign
+19. Market-wise campaign performance
+20. Response vs. non-response profiling
+
+---
+
+### **✅**
+
+### **PART 2: CUSTOMER SEGMENTATION & LIFECYCLE (21–40)**
+
+1. RFM segmentation (Recency, Frequency, Monetary)
+2. High-LTV customer identification
+3. LTV distribution across customers
+4. First-time vs returning buyers
+5. Dormant customers (no purchases in 6+ months)
+6. Churn risk scoring
+7. Average lifespan of a customer
+8. Reactivated customers post-campaign
+9. Best-performing ZIP codes
+10. Gender-based purchase patterns
+11. Age group responsiveness to mailers
+12. Number of campaigns received vs. orders placed
+13. Channels available per customer (phone, email, address)
+14. Birthday month campaign targeting
+15. Most valuable customer segments
+16. Top 10% of customers by revenue
+17. Customer growth over time
+18. Order value per segment
+19. Response distribution by demographic
+20. Zipcode clustering for campaign zones
+
+---
+
+### **✅**
+
+### **PART 3: PRODUCT & ORDER ANALYSIS (41–60)**
+
+1. Best-selling products overall
+2. Product performance by segment (e.g., high spenders vs low)
+3. Product bundles frequently purchased
+4. Return rate (if tracked by order date vs repurchase gaps)
+5. First product purchased most often
+6. Products with highest average revenue
+7. Average order value (AOV)
+8. Orders per customer
+9. Customer-product affinity (who buys what)
+10. Most gifted or seasonal products
+11. Product purchase frequency
+12. Most ordered product per ZIP code
+13. Time between purchases
+14. Reorder trends (who reorders and when)
+15. Revenue by product category (if available)
+16. Products that are common entry points
+17. Most common second purchase
+18. Product popularity by campaign
+19. Average items per order
+20. Product stickiness (repurchase rate per product)
+
+---
+
+### **✅**
+
+### **PART 4: CAMPAIGN TIMING & STRATEGY (61–80)**
+
+1. Best day of the week to send mailers
+2. Best week/month of year for mailing
+3. Holiday or seasonal campaign performance
+4. Time gap between campaigns vs. response rates
+5. Multi-campaign attribution analysis
+6. Diminishing returns after multiple mailers
+7. Optimal number of days between campaigns
+8. Over-mailing risk zones
+9. Campaign overlap detection (who got too many?)
+10. First-touch campaign effectiveness
+11. Follow-up campaign performance
+12. Pre-purchase campaign trigger analysis
+13. Post-purchase follow-up success
+14. A/B testing campaign headlines or offers
+15. Campaign segmentation effectiveness
+16. Campaign content relevance analysis
+17. Loyalty campaign outcomes
+18. Urgency wording vs. response behavior
+19. Personalized vs generic mailer results
+20. Lag time optimization (from mail to sale)
+
+---
+
+### **✅**
+
+### **PART 5: CUSTOMER VALUE & FORECASTING (81–100)**
+
+1. **Customer Lifetime Value (LTV)** calculation
+2. **Projected future revenue** from active customers
+3. **High-value customer forecast** (who will likely spend more)
+4. **Churn forecasting** (who might stop buying soon)
+5. **Sales forecasting** based on past campaign data
+6. **Revenue per ZIP code prediction**
+7. **Long-term impact of mailers** on customer behavior
+8. **Customer lifetime curve** by cohort (e.g., year joined)
+9. **Average time to break even** on mailer investment
+10. **Monetary value segmentation** (Low, Medium, High spenders)
+11. **Frequency forecast** (who is likely to buy again soon)
+12. **Recency trigger scoring** (who should get a mailer next)
+13. **Expected AOV growth** for returning customers
+14. **Order volume prediction** by customer group
+15. **Customer conversion funnel** from 1st to 2nd to 3rd purchase
+16. **Net revenue impact** of mailers by campaign
+17. **Purchase window** analysis (how long after campaign people buy)
+18. **Lead time from mail to order** forecasting
+19. **Profitability forecast** per segment
+20. **Lifetime mail cost vs profit** analysis per customer
+
+---
+
+### **🧠**
+
+### **BONUS: PART 6 – ADVANCED & PREDICTIVE ANALYTICS (101–120)**
+
+1. **Propensity model** – predict who’s likely to respond
+2. **Lookalike modeling** – find new customers like your best ones
+3. **Churn scoring model** – who is most likely to stop buying
+4. **Campaign uplift modeling** – what campaign actually drove change
+5. **Segmentation clustering** – use K-means or PCA to group customers
+6. **Next best offer** – what should we promote to each customer
+7. **Time-series modeling** – forecast revenue or orders per month
+8. **Response modeling** – train model on past responses to predict future ones
+9. **Geo-targeting optimization** – focus on ZIPs with best ROI
+10. **Predictive customer scoring** – future value scoring
+11. **Multi-touch attribution** – credit sales across multiple mailers
+12. **Campaign saturation detection** – detect overexposure
+13. **Purchase probability scoring** – rank customers by likeliness to buy
+14. **Personalized mail timing optimization**
+15. **Multi-variate testing** optimization for mail format/content
+16. **Marketing mix modeling** (MMM) – offline + other channels
+17. **Offer responsiveness** modeling – % off vs flat price vs free gift
+18. **ROI simulation** per campaign before sending
+19. **Delivery optimization** – mail delay vs conversion lag
+20. **Decision trees** for customer conversion paths
+
+---
+
+## **✅**
+
+## **PART 7: STRATEGIC ACTIONS YOU CAN TAKE**
+
+1. Prioritize **high-LTV** and **recent** customers for next mailer
+2. Use **RFM scores** to define custom mailer lists
+3. Create **ZIP code heatmaps** for geographic targeting
+4. Build separate mailers for **new**, **loyal**, and **lapsed** customers
+5. Test and analyze different **offer types** (discounts, gifts, urgency)
+6. **Suppress** low-engagement customers to save costs
+7. Design **campaign calendar** based on seasonality & buying trends
+8. Analyze **product preferences** and recommend best-sellers
+9. Optimize **mail drop timing** based on previous conversion lags
+10. Create **personalized messages** based on past purchases
+
+### **PRIORITY 1 — High Impact & Easy to Implement (Quick Wins)**
+
+These should be done **immediately** before sending any new mailer.
+
+1. **RFM Segmentation** – Identify your best, loyal, and at-risk customers
+2. **Customer List Cleanup** – Remove dead ZIP codes, bounce-prone addresses
+3. **High-LTV Customer Targeting** – Prioritize mailing your top spenders
+4. **Recent Responders** – Target those who responded in the last 30–90 days
+5. **Campaign Conversion Rate** – Review past campaigns’ effectiveness
+6. **Top ZIP Codes** – Focus mailers on high-converting areas
+7. **Most Purchased Products** – Feature top-selling or high-margin items
+8. **Average Mail-to-Order Time** – Time your campaign for ideal response lag
+9. **One-Time Buyers** – Create reactivation campaigns for them
+10. **Gender/Age Segments** – Segment mailers for better personalization
+
+---
+
+### **📈**
+
+### **PRIORITY 2 — Medium Complexity, High Insight (Strategic Planning)**
+
+These help shape your **long-term campaign design** and segmentation.
+
+1. **Churn Analysis** – Find who hasn’t ordered in 6+ months
+2. **Customer Lifetime Value (LTV)** – Identify revenue potential per customer
+3. **Campaign ROI** – Compare cost vs revenue for each past campaign
+4. **Purchase Frequency by Product** – Know which products lead to repeat buys
+5. **Purchase Window Analysis** – When are people most likely to buy again
+6. **First Product Bought** – Determine best entry products
+7. **Repeat Campaign Performance** – Analyze if mailing more = more sales
+8. **ZIP-Level Revenue Map** – Visualize sales by location
+9. **Most Profitable Campaigns** – Based on net margin
+10. **Response by Time of Year** – Find the best seasons to mail
+
+---
+
+### **🔬**
+
+### **PRIORITY 3 — Advanced Analysis (Optional or Long-Term)**
+
+These require more setup or modeling, but yield powerful personalization.
+
+1. **Predictive Modeling** – Score customers on likelihood to convert
+2. **Offer A/B Testing** – Analyze flat discounts vs % off vs gifts
+3. **Lookalike Modeling** – Find similar prospects to your best customers
+4. **Campaign Fatigue Analysis** – Who’s receiving too many mailers?
+5. **Delivery Optimization** – Match mail drop to delivery window
+6. **Product Affinity Analysis** – What products are bought together?
+7. **Multi-campaign Attribution** – If multiple campaigns influence a sale
+8. **Customer Journey Mapping** – Track from first campaign to final purchase
+9. **Order Delay Forecasting** – Predict when an order is likely to occur
+10. **Reactivation Modeling** – Predict if lapsed customers will return
