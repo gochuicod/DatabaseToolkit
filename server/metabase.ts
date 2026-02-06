@@ -171,11 +171,12 @@ function buildFilterClause(filter: FilterValue): any[] {
   }
 }
 
+// Helper function for count logic
 export async function getCount(
   databaseId: number,
   tableId: number,
   filters: FilterValue[],
-  limit: number = 100000, // Default limit
+  limit: number = 1000, // Default limit
 ): Promise<{ count: number; total: number; percentage: number }> {
   const totalQuery = {
     database: databaseId,
@@ -209,12 +210,6 @@ export async function getCount(
   });
 
   const fieldClauses = Object.values(filtersByField).map(group => {
-    // If multiple filters for the same field:
-    // Check if they are "inclusion" types (equals, contains) -> OR
-    // Check if they are "range" types (>, <) -> AND
-
-    // Simple heuristic: If ALL operators are equals/contains/starts_with/ends_with -> OR
-    // Otherwise -> AND
     const isInclusion = group.every(f =>
       ["equals", "contains", "starts_with", "ends_with"].includes(f.operator)
     );
@@ -223,7 +218,6 @@ export async function getCount(
 
     if (group.length === 1) return clauses[0];
 
-    // Combine
     if (isInclusion) {
       return ["or", ...clauses];
     } else {
@@ -439,94 +433,29 @@ export async function getMailingList(
     method: "POST",
     body: JSON.stringify(query),
   });
-
   // ... [Keep the existing column mapping and entry creation logic] ...
   const rows = result.data?.rows ?? [];
   const cols = result.data?.cols ?? [];
 
-  const colIndexMap: Record<string, number> = {};
+  // DYNAMIC MAPPING: Map all available columns
+  const columnNames = cols.map((c: any) => c.name);
 
-  // Helper to find index by exact/partial match logic
-  const findColIndex = (patterns: string[], exclusions: string[] = []): number => {
-    // 1. Exact match
-    const exact = cols.findIndex((pd: any) => patterns.includes(pd.name.toLowerCase()));
-    if (exact !== -1) return exact;
+  // Helper to identify "suppression-relevant" fields for the internal logic (still needed for limiting/filtering)
+  // We do a best-effort find for these, but the OUTPUT sample will contain EVERYTHING.
+  const nameIdx = cols.findIndex((c: any) => c.name.toLowerCase().includes("name") || c.name.toLowerCase().includes("nm"));
+  const emailIdx = cols.findIndex((c: any) => c.name.toLowerCase().includes("mail"));
 
-    // 2. Contains match (checking exclusions)
-    return cols.findIndex((pd: any) => {
-      const name = pd.name.toLowerCase();
-      return patterns.some(p => name.includes(p)) && !exclusions.some(e => name.includes(e));
+  // We still need strictly typed 'name' and 'email' for the logExportToSuppressionList logic if we were using it inside here,
+  // but for the PREVIEW (which this function mostly serves), we want everything.
+
+  const entries: Record<string, any>[] = rows.map((row: any[]) => {
+    const entry: Record<string, any> = {};
+    columnNames.forEach((colName: string, index: number) => {
+      // Clean up the value (handle nulls)
+      entry[colName] = row[index] ?? "";
     });
-  };
-
-  // 1. Name: Prioritize actual name fields, avoid 'listname' or 'filename'
-  // Common valid: name, nm, fname, lname, full_name
-  colIndexMap.name = findColIndex(
-    ["name", "nm", "fname", "full_name", "氏名", "名前"],
-    ["listname", "filename", "table", "file"]
-  );
-
-  // 2. Email: specific and generic
-  colIndexMap.email = findColIndex(["email", "mail", "e-mail", "e_mail"]);
-
-  // 3. Address: add1, street, address
-  colIndexMap.address = findColIndex(["add1", "add-1", "street", "address", "addr", "住所"]);
-
-  // 4. City: city, town
-  colIndexMap.city = findColIndex(["city", "town", "市"]);
-
-  // 5. State: state, province, prefecture
-  colIndexMap.state = findColIndex(["state", "province", "prefecture", "県", "州"]);
-
-  // 6. Zip: zip, postal
-  colIndexMap.zipcode = findColIndex(["zip", "postal", "郵便番号"]);
-
-  // 7. Country: country
-  colIndexMap.country = findColIndex(["country", "国"]);
-
-  // Cleanup undefined mapping (-1)
-  Object.keys(colIndexMap).forEach(key => {
-    if (colIndexMap[key] === -1) delete colIndexMap[key];
+    return entry;
   });
-
-  // FALLBACK: If major fields are missing, map first available string columns to them
-  // This ensures *something* shows up in the UI even if headers don't match
-  const usedIndices = new Set(Object.values(colIndexMap));
-  let availableIndices = cols.map((_: any, i: number) => i).filter((i: number) => !usedIndices.has(i));
-
-  if (!("name" in colIndexMap) && availableIndices.length > 0) {
-    colIndexMap.name = availableIndices.shift()!;
-  }
-  if (!("email" in colIndexMap) && availableIndices.length > 0) {
-    colIndexMap.email = availableIndices.shift()!;
-  }
-
-  const entries: MailingListEntry[] = rows.map((row: any[]) => ({
-    name:
-      colIndexMap.name !== undefined ? String(row[colIndexMap.name] ?? "") : "",
-    email:
-      colIndexMap.email !== undefined
-        ? String(row[colIndexMap.email] ?? "")
-        : "",
-    address:
-      colIndexMap.address !== undefined
-        ? String(row[colIndexMap.address] ?? "")
-        : "",
-    city:
-      colIndexMap.city !== undefined ? String(row[colIndexMap.city] ?? "") : "",
-    state:
-      colIndexMap.state !== undefined
-        ? String(row[colIndexMap.state] ?? "")
-        : "",
-    zipcode:
-      colIndexMap.zipcode !== undefined
-        ? String(row[colIndexMap.zipcode] ?? "")
-        : "",
-    country:
-      colIndexMap.country !== undefined
-        ? String(row[colIndexMap.country] ?? "")
-        : "",
-  }));
 
   // Pass scanLimit to getCount as well
   const countResult = await getCount(databaseId, tableId, filters, scanLimit);

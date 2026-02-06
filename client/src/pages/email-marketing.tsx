@@ -52,7 +52,7 @@ interface SegmentSuggestion {
 
 interface PreviewResponse {
   count: number;
-  sample: MailingListEntry[];
+  sample: Record<string, any>[];
   excludedCount: number;
   totalCandidates: number;
   historyTableUsed: boolean;
@@ -508,25 +508,22 @@ export default function EmailMarketing() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="text-[11px] h-8">Name</TableHead>
-                            <TableHead className="text-[11px] h-8">Email</TableHead>
-                            <TableHead className="text-[11px] h-8">Address</TableHead>
-                            <TableHead className="text-[11px] h-8">City</TableHead>
-                            <TableHead className="text-[11px] h-8">State</TableHead>
-                            <TableHead className="text-[11px] h-8">Zip</TableHead>
-                            <TableHead className="text-[11px] h-8">Country</TableHead>
+                            {previewResult.sample.length > 0 &&
+                              Object.keys(previewResult.sample[0]).map((key) => (
+                                <TableHead key={key} className="text-[11px] h-8 font-bold">
+                                  {key}
+                                </TableHead>
+                              ))}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {previewResult.sample.map((c, i) => (
+                          {previewResult.sample.map((row, i) => (
                             <TableRow key={i} className="h-8">
-                              <TableCell className="py-1 text-[11px] font-medium">{c.name}</TableCell>
-                              <TableCell className="py-1 text-[11px]">{c.email}</TableCell>
-                              <TableCell className="py-1 text-[11px] max-w-[150px] truncate" title={c.address}>{c.address}</TableCell>
-                              <TableCell className="py-1 text-[11px]">{c.city}</TableCell>
-                              <TableCell className="py-1 text-[11px]">{c.state}</TableCell>
-                              <TableCell className="py-1 text-[11px]">{c.zipcode}</TableCell>
-                              <TableCell className="py-1 text-[11px]">{c.country}</TableCell>
+                              {Object.values(row).map((val, j) => (
+                                <TableCell key={j} className="py-1 text-[11px] max-w-[200px] truncate" title={String(val)}>
+                                  {val !== null && val !== undefined ? String(val) : ""}
+                                </TableCell>
+                              ))}
                             </TableRow>
                           ))}
                         </TableBody>

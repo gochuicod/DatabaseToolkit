@@ -467,8 +467,10 @@ export async function registerRoutes(
       // Since `excludedIds` is a set of ALL excluded IDs, we can't easily intersect without fetching all candidates.
       // So "Matched Contacts" will be "Estimated Candidates" unless we scan more.
 
-      const sample = result.entries.filter((e) => {
-        const email = e.email?.toLowerCase();
+      const sample = result.entries.filter((e: any) => {
+        // Try to find an email field dynamically for suppression logic
+        const emailKey = Object.keys(e).find(k => k.toLowerCase().includes("mail"));
+        const email = emailKey ? String(e[emailKey]).toLowerCase() : "";
         return email && !excludedIds.has(email);
       });
 
@@ -561,8 +563,11 @@ export async function registerRoutes(
       );
 
       // 3. Filter & Export
-      const exportRows = result.entries.filter((e) => {
-        const email = e.email?.toLowerCase();
+      // 3. Filter & Export
+      const exportRows = result.entries.filter((e: any) => {
+        // Try to find an email field dynamically for suppression logic
+        const emailKey = Object.keys(e).find(k => k.toLowerCase().includes("mail"));
+        const email = emailKey ? String(e[emailKey]).toLowerCase() : "";
         return email && !excludedIds.has(email);
       });
 
@@ -574,17 +579,26 @@ export async function registerRoutes(
       }
 
       // 5. Generate CSV
+      // 5. Generate CSV (Dynamic)
+      if (exportRows.length === 0) {
+        res.header("Content-Type", "text/csv");
+        res.attachment(`campaign-${marketingCode}.csv`);
+        res.send("No records found");
+        return;
+      }
+
+      const csvHeaders = Object.keys(exportRows[0]);
       const csvContent = [
-        ["Name", "Email", "City", "State"].join(","),
-        ...exportRows.map((r) =>
-          [
-            `"${r.name || ""}"`,
-            `"${r.email || ""}"`,
-            `"${r.city || ""}"`,
-            `"${r.state || ""}"`,
-          ].join(","),
+        csvHeaders.join(","),
+        ...exportRows.map((r: any) =>
+          csvHeaders.map(header => {
+            const val = r[header];
+            // Escape quotes and wrap in quotes
+            const stringVal = val === null || val === undefined ? "" : String(val);
+            return `"${stringVal.replace(/"/g, '""')}"`;
+          }).join(",")
         ),
-      ].join("\\n");
+      ].join("\n");
 
       res.header("Content-Type", "text/csv");
       res.attachment(`campaign-${marketingCode}.csv`);
