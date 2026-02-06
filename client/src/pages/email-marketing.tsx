@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Mail,
   Sparkles,
@@ -39,7 +40,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { MetabaseDatabase, MetabaseTable } from "@shared/schema";
+import type { MetabaseDatabase, MetabaseTable, MailingListEntry } from "@shared/schema";
 import { Step } from "@/components/ui/stepper";
 
 // ... [Keep interfaces SegmentSuggestion and PreviewResponse the same] ...
@@ -51,12 +52,7 @@ interface SegmentSuggestion {
 
 interface PreviewResponse {
   count: number;
-  sample: Array<{
-    name: string;
-    email: string;
-    city?: string;
-    state?: string;
-  }>;
+  sample: MailingListEntry[];
   excludedCount: number;
   totalCandidates: number;
   historyTableUsed: boolean;
@@ -508,18 +504,33 @@ export default function EmailMarketing() {
                     <Label className="text-[11px] font-bold uppercase text-muted-foreground">
                       Sample Data
                     </Label>
-                    <ScrollArea className="h-[280px] rounded-lg border bg-muted/10 p-2">
-                      {previewResult.sample.map((c, i) => (
-                        <div
-                          key={i}
-                          className="mb-2 p-2 rounded bg-background border shadow-sm text-[11px]"
-                        >
-                          <p className="font-bold truncate">{c.name}</p>
-                          <p className="text-muted-foreground truncate">
-                            {c.email}
-                          </p>
-                        </div>
-                      ))}
+                    <ScrollArea className="h-[280px] rounded-lg border bg-muted/10">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-[11px] h-8">Name</TableHead>
+                            <TableHead className="text-[11px] h-8">Email</TableHead>
+                            <TableHead className="text-[11px] h-8">Address</TableHead>
+                            <TableHead className="text-[11px] h-8">City</TableHead>
+                            <TableHead className="text-[11px] h-8">State</TableHead>
+                            <TableHead className="text-[11px] h-8">Zip</TableHead>
+                            <TableHead className="text-[11px] h-8">Country</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {previewResult.sample.map((c, i) => (
+                            <TableRow key={i} className="h-8">
+                              <TableCell className="py-1 text-[11px] font-medium">{c.name}</TableCell>
+                              <TableCell className="py-1 text-[11px]">{c.email}</TableCell>
+                              <TableCell className="py-1 text-[11px] max-w-[150px] truncate" title={c.address}>{c.address}</TableCell>
+                              <TableCell className="py-1 text-[11px]">{c.city}</TableCell>
+                              <TableCell className="py-1 text-[11px]">{c.state}</TableCell>
+                              <TableCell className="py-1 text-[11px]">{c.zipcode}</TableCell>
+                              <TableCell className="py-1 text-[11px]">{c.country}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
                     </ScrollArea>
                   </div>
 

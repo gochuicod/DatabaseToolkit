@@ -317,13 +317,52 @@ export async function registerRoutes(
         historyTableName = tables.find(t => t.id === historyTableId)?.name || "History Table";
       }
 
+      // 1. Fetch Samples for Categorical/Text Fields
+      // This gives the AI context on actual values (e.g. "Interest: ['Sports', 'Music']")
+      const fieldSamples: Record<string, string[]> = {};
+
+      console.log(`[Analyze] Fetching samples for Master Table: ${masterTableName} (${masterTableId})`);
+
+      // Filter for fields that are likely categorical (Text/Category)
+      // Limit to first 10 fields to avoid performance hit
+      const candidateFields = masterFields
+        .filter(f =>
+          (f.base_type === "type/Text" || f.semantic_type === "type/Category")
+          && !f.name.toLowerCase().includes("id") // skip IDs
+          && !f.name.toLowerCase().includes("email") // skip PII
+          && !f.name.toLowerCase().includes("name") // skip PII
+        )
+        .slice(0, 10);
+
+      const samplePromises = candidateFields.map(async (f) => {
+        try {
+          // Limit to 10 options, enough for AI context
+          const options = await getFieldOptions(parsed.data.databaseId, masterTableId, f.id, 1000);
+          // getFieldOptions returns objects { value, count }
+          // We take top 5 values
+          const topValues = options.slice(0, 5).map(o => o.value);
+          if (topValues.length > 0) {
+            fieldSamples[f.name] = topValues;
+          }
+        } catch (e) {
+          // Ignore failures for samples
+        }
+      });
+
+      await Promise.all(samplePromises);
+
+      console.log("[Analyze] Field Samples collected:", JSON.stringify(fieldSamples, null, 2));
+
       const analysis = await analyzeMarketingConceptMasterTable(
         concept,
         masterFields,
         masterTableName,
         historyFields,
-        historyTableName
+        historyTableName,
+        fieldSamples // Pass samples to AI
       );
+
+      console.log("[Analyze] AI Analysis Result:", JSON.stringify(analysis, null, 2));
 
       res.json(analysis);
     } catch (error) {
@@ -375,20 +414,39 @@ export async function registerRoutes(
           (f) => f.name.toLowerCase() === fieldName.toLowerCase(),
         );
         if (field) {
+          // Determine operator
+          // If value contains ><, use comparison.
+          // If field is Text, use 'contains' for fuzzier matching (AI sometimes hallucinates exact string).
+          // If field is Number, use 'equals' (or comparison).
+
+          let operator: any = "equals";
+          let finalValue: any = value;
+
+          if (value.startsWith(">")) {
+            operator = "greater_than";
+            finalValue = value.substring(1);
+          } else if (value.startsWith("<")) {
+            operator = "less_than";
+            finalValue = value.substring(1);
+          } else {
+            // Default logic
+            if (field.base_type === "type/Text" || field.semantic_type === "type/Category") {
+              operator = "contains"; // Relaxed matching for string fields
+            }
+            finalValue = value;
+          }
+
           filters.push({
             fieldId: field.id,
             fieldName: field.name,
             fieldDisplayName: field.display_name,
-            operator:
-              value.startsWith(">") || value.startsWith("<")
-                ? value.startsWith(">")
-                  ? "greater_than"
-                  : "less_than"
-                : "equals",
-            value: value.replace(/[<>]/, ""), // Simple parsing
+            operator: operator,
+            value: finalValue,
           });
         }
       }
+
+      console.log("[Preview] Generated Filters:", JSON.stringify(filters, null, 2));
 
       // Fetch sample (limit 100 for preview)
       const result = await getMailingList(
@@ -398,6 +456,8 @@ export async function registerRoutes(
         100, // Limit
         0, // Offset
       );
+
+      console.log(`[Preview] Result Count: ${result.total}, Entries: ${result.entries.length}`);
 
       // 3. Apply Suppression (In-Memory for Preview)
       // Note: `getMailingList` returns { entries, total }.
@@ -460,21 +520,33 @@ export async function registerRoutes(
       for (const segment of segments) {
         const [fieldName, value] = segment.split(":");
         if (!fieldName || !value) continue;
+        // Find field ID
         const field = fields.find(
           (f) => f.name.toLowerCase() === fieldName.toLowerCase(),
         );
         if (field) {
+          let operator: any = "equals";
+          let finalValue: any = value;
+
+          if (value.startsWith(">")) {
+            operator = "greater_than";
+            finalValue = value.substring(1);
+          } else if (value.startsWith("<")) {
+            operator = "less_than";
+            finalValue = value.substring(1);
+          } else {
+            if (field.base_type === "type/Text" || field.base_type === "type/Category") {
+              operator = "contains";
+            }
+            finalValue = value;
+          }
+
           filters.push({
             fieldId: field.id,
             fieldName: field.name,
             fieldDisplayName: field.display_name,
-            operator:
-              value.startsWith(">") || value.startsWith("<")
-                ? value.startsWith(">")
-                  ? "greater_than"
-                  : "less_than"
-                : "equals",
-            value: value.replace(/[<>]/, ""),
+            operator: operator,
+            value: finalValue,
           });
         }
       }

@@ -151,7 +151,7 @@ function buildFilterClause(filter: FilterValue): any[] {
       }
       return ["!=", fieldRef, filter.value];
     case "contains":
-      return ["contains", fieldRef, filter.value];
+      return ["contains", fieldRef, filter.value, { "case-sensitive": false }];
     case "starts_with":
       return ["starts-with", fieldRef, filter.value];
     case "ends_with":
@@ -200,9 +200,39 @@ export async function getCount(
     return { count: total, total, percentage: 100 };
   }
 
-  const filterClauses = filters.map(buildFilterClause);
+  // Group filters by field ID to handle multiple selections (OR logic) vs constraints (AND logic)
+  const filtersByField: Record<number, FilterValue[]> = {};
+
+  filters.forEach(f => {
+    if (!filtersByField[f.fieldId]) filtersByField[f.fieldId] = [];
+    filtersByField[f.fieldId].push(f);
+  });
+
+  const fieldClauses = Object.values(filtersByField).map(group => {
+    // If multiple filters for the same field:
+    // Check if they are "inclusion" types (equals, contains) -> OR
+    // Check if they are "range" types (>, <) -> AND
+
+    // Simple heuristic: If ALL operators are equals/contains/starts_with/ends_with -> OR
+    // Otherwise -> AND
+    const isInclusion = group.every(f =>
+      ["equals", "contains", "starts_with", "ends_with"].includes(f.operator)
+    );
+
+    const clauses = group.map(buildFilterClause);
+
+    if (group.length === 1) return clauses[0];
+
+    // Combine
+    if (isInclusion) {
+      return ["or", ...clauses];
+    } else {
+      return ["and", ...clauses];
+    }
+  });
+
   const combinedFilter =
-    filterClauses.length === 1 ? filterClauses[0] : ["and", ...filterClauses];
+    fieldClauses.length === 1 ? fieldClauses[0] : ["and", ...fieldClauses];
 
   const countQuery = {
     database: databaseId,
@@ -274,7 +304,20 @@ export async function getMailingList(
   const fields = await getFields(tableId);
 
   // ... [Keep the existing field finding logic (nameFieldId, etc.)] ...
-  const findField = (patterns: string[]): number | null => {
+  const findField = (patterns: string[], preferredType?: string): number | null => {
+    // First pass: look for exact/partial matches with preferred type
+    if (preferredType) {
+      for (const pattern of patterns) {
+        const field = fields.find(
+          (f) =>
+            (f.name.toLowerCase() === pattern || f.name.toLowerCase().includes(pattern)) &&
+            f.base_type === preferredType
+        );
+        if (field) return field.id;
+      }
+    }
+
+    // Second pass: any match
     for (const pattern of patterns) {
       const field = fields.find(
         (f) =>
@@ -295,10 +338,16 @@ export async function getMailingList(
     "氏名",
     "名前",
     "顧客名",
-  ]);
+    "nm",
+    "fname",
+    "lname",
+    "l + f name",
+  ], "type/Text");
+
   const emailFieldId = findField([
     "email",
     "mail",
+    "e_mail",
     "e-mail",
     "email_address",
     "メール",
@@ -307,12 +356,17 @@ export async function getMailingList(
     "email_addr",
     "mailing",
     "used_for_mailing",
-  ]);
+    "contact_email",
+    "primary_email",
+  ], "type/Text"); // Prefer Text to avoid 'bit' columns
+
   const addressFieldId = findField([
     "address",
     "street",
-    "address1",
-    "street_address",
+    "add1",
+    "add-1",
+    "add_1",
+    "addr",
     "住所",
     "アドレス",
   ]);
@@ -321,6 +375,7 @@ export async function getMailingList(
     "state",
     "province",
     "region",
+    "prefecture",
     "都道府県",
     "県",
     "州",
@@ -390,35 +445,61 @@ export async function getMailingList(
   const cols = result.data?.cols ?? [];
 
   const colIndexMap: Record<string, number> = {};
-  cols.forEach((col: any, index: number) => {
-    const name = col.name.toLowerCase();
-    if (name.includes("name") && !("name" in colIndexMap))
-      colIndexMap.name = index;
-    if (
-      (name.includes("email") || name.includes("mail")) &&
-      !("email" in colIndexMap)
-    )
-      colIndexMap.email = index;
-    if (
-      (name.includes("address") || name.includes("street")) &&
-      !("address" in colIndexMap)
-    )
-      colIndexMap.address = index;
-    if (name.includes("city") && !("city" in colIndexMap))
-      colIndexMap.city = index;
-    if (
-      (name.includes("state") || name.includes("province")) &&
-      !("state" in colIndexMap)
-    )
-      colIndexMap.state = index;
-    if (
-      (name.includes("zip") || name.includes("postal")) &&
-      !("zipcode" in colIndexMap)
-    )
-      colIndexMap.zipcode = index;
-    if (name.includes("country") && !("country" in colIndexMap))
-      colIndexMap.country = index;
+
+  // Helper to find index by exact/partial match logic
+  const findColIndex = (patterns: string[], exclusions: string[] = []): number => {
+    // 1. Exact match
+    const exact = cols.findIndex((pd: any) => patterns.includes(pd.name.toLowerCase()));
+    if (exact !== -1) return exact;
+
+    // 2. Contains match (checking exclusions)
+    return cols.findIndex((pd: any) => {
+      const name = pd.name.toLowerCase();
+      return patterns.some(p => name.includes(p)) && !exclusions.some(e => name.includes(e));
+    });
+  };
+
+  // 1. Name: Prioritize actual name fields, avoid 'listname' or 'filename'
+  // Common valid: name, nm, fname, lname, full_name
+  colIndexMap.name = findColIndex(
+    ["name", "nm", "fname", "full_name", "氏名", "名前"],
+    ["listname", "filename", "table", "file"]
+  );
+
+  // 2. Email: specific and generic
+  colIndexMap.email = findColIndex(["email", "mail", "e-mail", "e_mail"]);
+
+  // 3. Address: add1, street, address
+  colIndexMap.address = findColIndex(["add1", "add-1", "street", "address", "addr", "住所"]);
+
+  // 4. City: city, town
+  colIndexMap.city = findColIndex(["city", "town", "市"]);
+
+  // 5. State: state, province, prefecture
+  colIndexMap.state = findColIndex(["state", "province", "prefecture", "県", "州"]);
+
+  // 6. Zip: zip, postal
+  colIndexMap.zipcode = findColIndex(["zip", "postal", "郵便番号"]);
+
+  // 7. Country: country
+  colIndexMap.country = findColIndex(["country", "国"]);
+
+  // Cleanup undefined mapping (-1)
+  Object.keys(colIndexMap).forEach(key => {
+    if (colIndexMap[key] === -1) delete colIndexMap[key];
   });
+
+  // FALLBACK: If major fields are missing, map first available string columns to them
+  // This ensures *something* shows up in the UI even if headers don't match
+  const usedIndices = new Set(Object.values(colIndexMap));
+  let availableIndices = cols.map((_: any, i: number) => i).filter((i: number) => !usedIndices.has(i));
+
+  if (!("name" in colIndexMap) && availableIndices.length > 0) {
+    colIndexMap.name = availableIndices.shift()!;
+  }
+  if (!("email" in colIndexMap) && availableIndices.length > 0) {
+    colIndexMap.email = availableIndices.shift()!;
+  }
 
   const entries: MailingListEntry[] = rows.map((row: any[]) => ({
     name:
