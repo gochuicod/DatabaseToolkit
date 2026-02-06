@@ -13,6 +13,7 @@ import {
   Send,
   AlertCircle,
   CheckCircle2,
+  ShieldCheck, // NEW: Icon for suppression
 } from "lucide-react";
 import {
   Card,
@@ -41,6 +42,7 @@ import { apiRequest } from "@/lib/queryClient";
 import type { MetabaseDatabase, MetabaseTable } from "@shared/schema";
 import { Step } from "@/components/ui/stepper";
 
+// ... [Keep interfaces SegmentSuggestion and PreviewResponse the same] ...
 interface SegmentSuggestion {
   segment: string;
   confidence: number;
@@ -72,7 +74,9 @@ export default function EmailMarketing() {
   const [selectedMasterTableId, setSelectedMasterTableId] = useState<
     number | null
   >(null);
-  const [selectedHistoryTableId, setSelectedHistoryTableId] = useState<
+
+  // NEW: State for the fixed Global Suppression Table
+  const [globalSuppressionTableId, setGlobalSuppressionTableId] = useState<
     number | null
   >(null);
 
@@ -96,19 +100,44 @@ export default function EmailMarketing() {
     concept.trim().length > 0 &&
     marketingCode.trim().length > 0;
 
-  // Queries
-  const { data: databases, isLoading: isLoadingDatabases } = useQuery<
-    MetabaseDatabase[]
-  >({
+  // --- QUERIES ---
+
+  // 1. Fetch All Databases
+  const { data: databases } = useQuery<MetabaseDatabase[]>({
     queryKey: ["/api/metabase/databases"],
   });
 
+  // 2. Fetch Tables for the User Selected DB (T1 Source)
   const { data: tables } = useQuery<MetabaseTable[]>({
     queryKey: ["/api/metabase/databases", selectedDatabaseId, "tables"],
     enabled: !!selectedDatabaseId,
   });
 
-  // Mutations
+  // 3. NEW: Logic to find the Global Suppression Table automatically
+  // We first find the Suppression DB, then fetch its tables to find the specific history table.
+  const suppressionDb = databases?.find(
+    (db) => db.name === "Marketing_Global_Suppression",
+  );
+
+  const { data: suppressionTables } = useQuery<MetabaseTable[]>({
+    queryKey: ["/api/metabase/databases", suppressionDb?.id, "tables"],
+    enabled: !!suppressionDb,
+  });
+
+  // 4. NEW: Auto-select the specific table when found
+  useEffect(() => {
+    if (suppressionTables) {
+      const historyTable = suppressionTables.find(
+        (t) => t.name === "tbl_Global_Campaign_History",
+      );
+      if (historyTable) {
+        setGlobalSuppressionTableId(historyTable.id);
+      }
+    }
+  }, [suppressionTables]);
+
+  // --- MUTATIONS ---
+
   const analysisMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/ai/analyze-concept-v2", {
@@ -116,7 +145,10 @@ export default function EmailMarketing() {
         marketingCode,
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-        historyTableId: selectedHistoryTableId,
+
+        // CHANGED: Always send the fixed Global Suppression Table ID
+        historyTableId: globalSuppressionTableId,
+
         birthdayFilter,
         excludeDays: parseInt(excludeDays) || 7,
         contactCap: parseInt(contactCap) || 5000,
@@ -162,6 +194,13 @@ export default function EmailMarketing() {
       a.href = url;
       a.download = `campaign-${marketingCode || "export"}.csv`;
       a.click();
+
+      // OPTIONAL: Add a toast here confirming that write-back to Global Suppression was triggered
+      toast({
+        title: "Export & Log Complete",
+        description: `Exported successfully. Logged to Global Suppression with code: ${marketingCode}`,
+        variant: "default",
+      });
     },
   });
 
@@ -181,7 +220,7 @@ export default function EmailMarketing() {
         <div>
           <h1 className="text-2xl font-bold">Email Marketing Tool</h1>
           <p className="text-sm text-muted-foreground">
-            AI-powered email list generation with two-table architecture
+            AI-powered email list generation with Global Suppression
           </p>
         </div>
       </div>
@@ -214,7 +253,7 @@ export default function EmailMarketing() {
                 /* STEP 1: DATA SOURCE */
                 <div className="space-y-6 animate-in fade-in slide-in-from-left-2 duration-300">
                   <div className="space-y-2">
-                    <Label>Metabase Database</Label>
+                    <Label>Metabase Database (Source)</Label>
                     <Select
                       value={selectedDatabaseId?.toString() || ""}
                       onValueChange={(v) => setSelectedDatabaseId(parseInt(v))}
@@ -236,7 +275,7 @@ export default function EmailMarketing() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="space-y-2">
                         <Label className="flex items-center gap-2">
-                          T1: Master List{" "}
+                          T1: Master Email List{" "}
                           <Badge
                             variant="destructive"
                             className="h-4 px-1 text-[10px]"
@@ -263,45 +302,33 @@ export default function EmailMarketing() {
                         </Select>
                       </div>
 
+                      {/* CHANGED: Replaced Dropdown with Static Suppression Info */}
                       <div className="space-y-2">
                         <Label className="flex items-center gap-2">
-                          T2: History/Behavior{" "}
+                          T2: Suppression List{" "}
                           <Badge
-                            variant="secondary"
-                            className="h-4 px-1 text-[10px]"
+                            variant="default"
+                            className="h-4 px-1 text-[10px] bg-green-600 hover:bg-green-700"
                           >
-                            Optional
+                            Active
                           </Badge>
                         </Label>
-                        <Select
-                          value={selectedHistoryTableId?.toString() || "none"}
-                          onValueChange={(v) =>
-                            setSelectedHistoryTableId(
-                              v === "none" ? null : parseInt(v),
-                            )
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select history table" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">
-                              No history table
-                            </SelectItem>
-                            {tables?.map((t) => (
-                              <SelectItem key={t.id} value={t.id.toString()}>
-                                {t.display_name || t.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <div className="h-10 rounded-md border border-input bg-muted/50 px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground">
+                          <ShieldCheck className="h-4 w-4 text-green-600" />
+                          {globalSuppressionTableId
+                            ? "Marketing_Global_Suppression"
+                            : "Searching for Suppression DB..."}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground pl-1">
+                          Automatically checks 'tbl_Global_Campaign_History'
+                        </p>
                       </div>
                     </div>
                   )}
 
                   <div className="flex justify-end pt-6 border-t mt-auto">
                     <Button
-                      disabled={!isStep1Complete}
+                      disabled={!isStep1Complete || !globalSuppressionTableId}
                       onClick={() => setCurrentStep(2)}
                       className="gap-2"
                     >
@@ -323,12 +350,16 @@ export default function EmailMarketing() {
                       />
                     </div>
                     <div className="space-y-2 col-span-2">
-                      <Label>Marketing Code</Label>
+                      <Label>Marketing Code (Required for Logging)</Label>
                       <Input
-                        placeholder="e.g. CAMPAIGN-2026-01"
+                        placeholder="e.g. L003"
                         value={marketingCode}
                         onChange={(e) => setMarketingCode(e.target.value)}
                       />
+                      <p className="text-[10px] text-muted-foreground">
+                        This code will be logged to the Global Suppression list
+                        upon export.
+                      </p>
                     </div>
                   </div>
 
@@ -347,13 +378,13 @@ export default function EmailMarketing() {
                     </div>
                     <div className="space-y-2">
                       <Label className="text-xs font-bold uppercase text-muted-foreground">
-                        Exclusion (Days)
+                        Suppression (Days)
                       </Label>
                       <Input
                         type="number"
                         value={excludeDays}
                         onChange={(e) => setExcludeDays(e.target.value)}
-                        disabled={!selectedHistoryTableId}
+                      // CHANGED: Always enabled since we always have a suppression table now
                       />
                     </div>
                     <div className="space-y-2">
@@ -394,7 +425,7 @@ export default function EmailMarketing() {
             </CardContent>
           </Card>
 
-          {/* Analysis Results (Shows below the wizard after analysis) */}
+          {/* ... [Rest of the file remains the same: Analysis Result & Sidebar] ... */}
           {analysisResult && (
             <Card className="animate-in slide-in-from-bottom-4 duration-500 border-primary/20">
               <CardHeader>

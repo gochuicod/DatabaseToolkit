@@ -216,6 +216,7 @@ export const analyzeConceptSchemaV2 = z.object({
   databaseId: z.number(),
   masterTableId: z.number(), // T1: Master Email List (required)
   historyTableId: z.number().nullable().optional(), // T2: History/Behavior Log (optional)
+  marketingCode: z.string().optional(), // Added for logging context
   birthdayFilter: z.string().optional(),
   excludeDays: z.number().min(0).default(7),
   contactCap: z.number().min(1).default(5000),
@@ -225,11 +226,21 @@ export const emailPreviewSchemaV2 = z.object({
   databaseId: z.number(),
   masterTableId: z.number(), // T1: Master Email List (required)
   historyTableId: z.number().nullable().optional(), // T2: History/Behavior Log (optional)
+  marketingCode: z.string().optional(), // Added for suppression checks
   segments: z.array(z.string()), // Format: "field_name:value"
   ageRange: z.string().nullable().optional(),
   birthdayFilter: z.string().optional(),
   excludeDays: z.number().min(0).default(7),
   contactCap: z.number().min(1).default(5000),
+});
+
+export const emailExportSchemaV2 = z.object({
+  databaseId: z.number(),
+  masterTableId: z.number(),
+  historyTableId: z.number().nullable().optional(),
+  marketingCode: z.string().min(1, "Marketing Code is required for export"),
+  segments: z.array(z.string()),
+  excludeDays: z.number().min(0).default(7),
 });
 
 export type AnalyzeConceptRequestV2 = z.infer<typeof analyzeConceptSchemaV2>;

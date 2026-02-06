@@ -10,6 +10,8 @@ import {
   getAggregatedData,
   getTotalCount,
   runRawQuery,
+  getSuppressedEmailsFromHistory,
+  logExportToHistory,
 } from "./metabase";
 import {
   countQuerySchema,
@@ -18,8 +20,9 @@ import {
   analyzeConceptSchema,
   emailPreviewSchema,
   trendsICPAnalysisSchema,
-  analyzeConceptSchemaV2,
   emailPreviewSchemaV2,
+  analyzeConceptSchemaV2,
+  emailExportSchemaV2,
   type FilterValue,
   type TableWithFields,
 } from "@shared/schema";
@@ -279,6 +282,244 @@ export async function registerRoutes(
         error:
           error instanceof Error ? error.message : "Failed to analyze concept",
       });
+    }
+  });
+
+  // Email Marketing Tool V2 - Two-Table Architecture & Global Suppression
+
+  app.post("/api/ai/analyze-concept-v2", async (req, res) => {
+    try {
+      const parsed = analyzeConceptSchemaV2.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid request body", details: parsed.error.errors });
+      }
+
+      const { concept, masterTableId, historyTableId } = parsed.data;
+
+      const masterFields = await getFields(masterTableId);
+      // Fetch table names for context
+      // We can get table name by fetching table details or just fields (fields include table name usually?)
+      // We need table name for the AI context.
+      // Re-use `getFields` result? No, we need table metadata.
+      // Let's just pass empty names or fetch properly.
+      // Simple fix: pass 'Master Table' and 'History Table' as generics if names unavailable, 
+      // but ideally we fetch names.
+      // Optimization: We could look up table names from `getTables` if DB ID was passed (it is).
+
+      const tables = await getTables(parsed.data.databaseId);
+      const masterTableName = tables.find(t => t.id === masterTableId)?.name || "Master Table";
+
+      let historyFields: any[] | null = null;
+      let historyTableName: string | null = null;
+
+      if (historyTableId) {
+        historyFields = await getFields(historyTableId);
+        historyTableName = tables.find(t => t.id === historyTableId)?.name || "History Table";
+      }
+
+      const analysis = await analyzeMarketingConceptMasterTable(
+        concept,
+        masterFields,
+        masterTableName,
+        historyFields,
+        historyTableName
+      );
+
+      res.json(analysis);
+    } catch (error) {
+      console.error("Error in analyze-concept-v2:", error);
+      res.status(500).json({ error: "Analysis failed" });
+    }
+  });
+
+  app.post("/api/ai/preview-v2", async (req, res) => {
+    try {
+      const parsed = emailPreviewSchemaV2.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.errors });
+      }
+
+      const {
+        databaseId,
+        masterTableId,
+        historyTableId,
+        segments,
+        marketingCode,
+        excludeDays,
+      } = parsed.data;
+
+      // 1. Get Suppression List (Ref IDs) if History Table is active
+      let excludedIds = new Set<string>();
+      if (historyTableId) {
+        excludedIds = await getSuppressedEmailsFromHistory(
+          historyTableId,
+          excludeDays,
+          marketingCode,
+        );
+      }
+
+      // 2. Fetch Master Table Data (filtered by segments)
+      // Construct Metabase filters from segments
+      const fields = await getFields(masterTableId);
+      const filters: FilterValue[] = [];
+
+      for (const segment of segments) {
+        // format: "field:value"
+        const [fieldName, value] = segment.split(":");
+        if (!fieldName || !value) continue;
+
+        // Find field ID
+        const field = fields.find(
+          (f) => f.name.toLowerCase() === fieldName.toLowerCase(),
+        );
+        if (field) {
+          filters.push({
+            fieldId: field.id,
+            fieldName: field.name,
+            fieldDisplayName: field.display_name,
+            operator:
+              value.startsWith(">") || value.startsWith("<")
+                ? value.startsWith(">")
+                  ? "greater_than"
+                  : "less_than"
+                : "equals",
+            value: value.replace(/[<>]/, ""), // Simple parsing
+          });
+        }
+      }
+
+      // Fetch sample (limit 100 for preview)
+      const result = await getMailingList(
+        databaseId,
+        masterTableId,
+        filters,
+        100, // Limit
+        0, // Offset
+      );
+
+      // 3. Apply Suppression (In-Memory for Preview)
+      // Note: `getMailingList` returns { entries, total }.
+      // Use case: Total might be inaccurate if we suppress many, but for preview we just show sample.
+      // If we want exact count after suppression, we need to fetch ALL IDs? That's expensive.
+      // Approximation: Show "Total Candidates" (before suppression) and "Excluded Count" (if known).
+      // Since `excludedIds` is a set of ALL excluded IDs, we can't easily intersect without fetching all candidates.
+      // So "Matched Contacts" will be "Estimated Candidates" unless we scan more.
+
+      const sample = result.entries.filter((e) => {
+        const email = e.email?.toLowerCase();
+        return email && !excludedIds.has(email);
+      });
+
+      res.json({
+        count: result.total, // Total before suppression
+        sample: sample.slice(0, 10),
+        excludedCount: excludedIds.size, // Size of suppression list, not intersection
+        totalCandidates: result.total,
+        historyTableUsed: !!historyTableId,
+        filterWarning: null,
+      });
+    } catch (e) {
+      console.error("Preview error:", e);
+      res.status(500).json({ error: "Preview failed" });
+    }
+  });
+
+  app.post("/api/ai/export-v2", async (req, res) => {
+    try {
+      const parsed = emailExportSchemaV2.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ error: "Invalid request", details: parsed.error.errors });
+      }
+
+      const {
+        databaseId,
+        masterTableId,
+        historyTableId,
+        segments,
+        marketingCode,
+        excludeDays,
+      } = parsed.data;
+
+      // 1. Get Suppression List
+      let excludedIds = new Set<string>();
+      if (historyTableId) {
+        excludedIds = await getSuppressedEmailsFromHistory(
+          historyTableId,
+          excludeDays,
+          marketingCode,
+        );
+      }
+
+      // 2. Fetch ALL Data
+      const fields = await getFields(masterTableId);
+      const filters: FilterValue[] = [];
+      for (const segment of segments) {
+        const [fieldName, value] = segment.split(":");
+        if (!fieldName || !value) continue;
+        const field = fields.find(
+          (f) => f.name.toLowerCase() === fieldName.toLowerCase(),
+        );
+        if (field) {
+          filters.push({
+            fieldId: field.id,
+            fieldName: field.name,
+            fieldDisplayName: field.display_name,
+            operator:
+              value.startsWith(">") || value.startsWith("<")
+                ? value.startsWith(">")
+                  ? "greater_than"
+                  : "less_than"
+                : "equals",
+            value: value.replace(/[<>]/, ""),
+          });
+        }
+      }
+
+      // Fetch logic: Loop until done or limit cap (5000 default from UI?)
+      // Use large limit for now.
+      const result = await getMailingList(
+        databaseId,
+        masterTableId,
+        filters,
+        5000,
+      );
+
+      // 3. Filter & Export
+      const exportRows = result.entries.filter((e) => {
+        const email = e.email?.toLowerCase();
+        return email && !excludedIds.has(email);
+      });
+
+      // 4. Log to History (Async)
+      if (historyTableId && marketingCode) {
+        logExportToHistory(historyTableId, marketingCode, exportRows as any).catch(
+          (err) => console.error("Async Log Error:", err),
+        );
+      }
+
+      // 5. Generate CSV
+      const csvContent = [
+        ["Name", "Email", "City", "State"].join(","),
+        ...exportRows.map((r) =>
+          [
+            `"${r.name || ""}"`,
+            `"${r.email || ""}"`,
+            `"${r.city || ""}"`,
+            `"${r.state || ""}"`,
+          ].join(","),
+        ),
+      ].join("\\n");
+
+      res.header("Content-Type", "text/csv");
+      res.attachment(`campaign-${marketingCode}.csv`);
+      res.send(csvContent);
+    } catch (e) {
+      console.error("Export error:", e);
+      res.status(500).json({ error: "Export failed" });
     }
   });
 

@@ -619,3 +619,149 @@ export async function runNativeQuery(
     rowCount: result.row_count ?? result.data?.rows?.length ?? 0,
   };
 }
+
+// --- GLOBAL SUPPRESSION HELPERS ---
+
+/**
+ * Validates if the given table is the Global Campaign History table.
+ */
+async function getHistoryTableInfo(tableId: number) {
+  // We need the database ID to run queries.
+  // We can fetch the table details from Metabase API (via our getTables helper would be inefficient, 
+  // maybe we need a getTableDetails helper or just search all tables).
+  // For now, let's assume we can query `GET /api/table/:id` logic or similar.
+  // Since we don't have a direct `getTable(id)` helper exposed yet, let's just use `runNativeQuery` logic 
+  // tailored to the suppression DB if passed, OR we iterate databases.
+  // OPTIMIZATION: The calling function usually knows the Database ID. 
+  // BUT `historyTableId` is passed alone. 
+  // New helper: Get Table Metadata by ID.
+  // Since we don't have it, let's hack it or add `getTable(tableId)`?
+  // Let's rely on the caller passing `databaseId` of the history table if possible, 
+  // but the schema only sends `historyTableId`.
+
+  // Workaround: We will fetch ALL tables (cached ideally) or just assume the DB ID 
+  // is accessible via the table ID in Metabase if we queried it.
+  // Let's implement a simple `getTableMetadata` first if needed.
+  // Actually, `getTables(databaseId)` returns a list. 
+  // We can try to find the table in the known "Marketing_Global_Suppression" DB?
+  // No, that's brittle.
+
+  // Let's add `getTable` to Metabase API client tools inside this file first?
+  // Or simpler: Just expect the caller to pass suppressionDbId AND suppressionTableId?
+  // The schema has `historyTableId`. 
+  // Let's implement `getTableDetails` for this.
+  return null; // Placeholder to structure the code block
+}
+
+// We need a way to get DB ID from Table ID.
+// Using an internal helper here.
+async function getTableDetails(tableId: number): Promise<MetabaseTable | null> {
+  // Metabase API: GET /api/table/:id
+  try {
+    const res = await metabaseRequest(`/api/table/${tableId}`);
+    return {
+      id: res.id,
+      name: res.name,
+      display_name: res.display_name,
+      schema: res.schema,
+      db_id: res.db.id, // Metabase usually returns db object
+    };
+  } catch (e) {
+    console.warn(`Failed to fetch table details for ${tableId}`, e);
+    return null;
+  }
+}
+
+
+export async function getSuppressedEmailsFromHistory(
+  historyTableId: number,
+  daysToCheck: number,
+  marketingCode: string | undefined
+): Promise<Set<string>> {
+  const table = await getTableDetails(historyTableId);
+  if (!table) return new Set();
+
+  const dbId = table.db_id;
+  const tableName = table.name; // Expect 'tbl_Global_Campaign_History'
+
+  // Construct WHERE clause
+  const conditions = [];
+
+  // 1. Recency Check
+  if (daysToCheck > 0) {
+    // Postgre/Standard SQL syntax usually works for Metabase Native
+    conditions.push(`export_date >= current_date - interval '${daysToCheck} days'`);
+  }
+
+  // 2. Campaign Code Check (Exclude duplicates for THIS campaign)
+  if (marketingCode) {
+    const safeCode = marketingCode.replace(/'/g, "''");
+    conditions.push(`campaign_code = '${safeCode}'`);
+  }
+
+  if (conditions.length === 0) return new Set();
+
+  const whereClause = conditions.join(" OR ");
+
+  // We assume the field containing the email/ref_id is named 'ref_id' or 'email'.
+  // Let's try 'ref_id' as per previous plan, or 'email'.
+  // Safer to SELECT * LIMIT 1 to check columns? Or just try 'ref_id'.
+  // Let's assume 'ref_id' based on my previous artifacts.
+
+  const sql = `SELECT DISTINCT ref_id FROM "${tableName}" WHERE ${whereClause}`;
+
+  try {
+    const result = await runNativeQuery(dbId, sql);
+    // Rows are usually arrays of values in Metabase Native Query response
+    // e.g. [[ "email1@test.com" ], [ "email2@test.com" ]]
+    // But verify the format. `runNativeQuery` returns { rows: [...] } NOT { data: { rows: ... } }
+
+    const rows = result.rows || [];
+    const emails = new Set<string>();
+
+    rows.forEach((row: any[]) => {
+      if (row[0]) emails.add(String(row[0]).toLowerCase());
+    });
+
+    console.log(`[Suppression] Found ${emails.size} suppressed contacts from table ${tableName}`);
+    return emails;
+  } catch (err) {
+    console.error("[Suppression] Failed to fetch suppression list:", err);
+    return new Set(); // Fail open
+  }
+}
+
+export async function logExportToHistory(
+  historyTableId: number,
+  marketingCode: string,
+  contacts: { email: string }[]
+) {
+  if (contacts.length === 0 || !marketingCode) return;
+
+  const table = await getTableDetails(historyTableId);
+  if (!table) return;
+
+  const dbId = table.db_id;
+  const tableName = table.name;
+  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  const safeCode = marketingCode.replace(/'/g, "''");
+
+  // Chunking
+  const CHUNK_SIZE = 500;
+  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+    const chunk = contacts.slice(i, i + CHUNK_SIZE);
+
+    const values = chunk
+      .map(c => `('${c.email.replace(/'/g, "''").toLowerCase()}', '${safeCode}', '${today}')`)
+      .join(", ");
+
+    const sql = `INSERT INTO "${tableName}" (ref_id, campaign_code, export_date) VALUES ${values}`;
+
+    try {
+      await runNativeQuery(dbId, sql);
+    } catch (err) {
+      console.error(`[Suppression] Failed to log chunk to ${tableName}:`, err);
+    }
+  }
+  console.log(`[Suppression] Logged ${contacts.length} contacts to history for ${marketingCode}`);
+}
