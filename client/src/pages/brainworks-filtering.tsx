@@ -591,7 +591,7 @@ export default function BrainworksFiltering() {
                 <ArrowDownCircle className="h-4 w-4 mr-2" />
               )}
               {hitScanLimit
-                ? `Scan Next 100,000 Rows (Current Limit: ${scanLimit.toLocaleString()})`
+                ? `Scan 100,000 More Rows`
                 : `Load More (+${FETCH_LIMIT.toLocaleString()})`}
             </Button>
           )}
