@@ -1,28 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  Mail,
-  Sparkles,
-  Download,
-  Loader2,
-  Users,
-  Database,
-  History,
-  ChevronRight,
-  ChevronLeft,
-  Send,
-  AlertCircle,
-  CheckCircle2,
-  ShieldCheck, // NEW: Icon for suppression
-} from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Mail, Sparkles, Send, Download, Loader2, Users, Database, Layers, History, AlertCircle, CheckCircle2, Info } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -31,519 +10,876 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { MetabaseDatabase, MetabaseTable, MailingListEntry } from "@shared/schema";
-import { Step } from "@/components/ui/stepper";
+import type { MetabaseDatabase, MetabaseTable, TableWithFields } from "@shared/schema";
 
-// ... [Keep interfaces SegmentSuggestion and PreviewResponse the same] ...
 interface SegmentSuggestion {
   segment: string;
   confidence: number;
+  reasoning: string;
+  tableId?: number;
+  tableName?: string;
+  fieldName?: string;
+  value?: string;
+}
+
+// Parse segment format: "table_name.field_name:value" or "field_name:value"
+function parseSegmentFormat(segment: string): { tableName: string | null; fieldName: string; value: string } {
+  const colonIndex = segment.indexOf(":");
+  if (colonIndex === -1) {
+    return { tableName: null, fieldName: segment, value: "" };
+  }
+  
+  const fieldPart = segment.substring(0, colonIndex);
+  const valuePart = segment.substring(colonIndex + 1);
+  
+  const dotIndex = fieldPart.indexOf(".");
+  if (dotIndex !== -1) {
+    return {
+      tableName: fieldPart.substring(0, dotIndex),
+      fieldName: fieldPart.substring(dotIndex + 1),
+      value: valuePart,
+    };
+  }
+  
+  return { tableName: null, fieldName: fieldPart, value: valuePart };
+}
+
+interface AIAnalysisResponse {
+  suggestions: SegmentSuggestion[];
+  suggestedAgeRange: string | null;
   reasoning: string;
 }
 
 interface PreviewResponse {
   count: number;
-  sample: Record<string, any>[];
+  sample: Array<{
+    name: string;
+    email: string;
+    city?: string;
+    state?: string;
+    engagementScore?: number;
+  }>;
   excludedCount: number;
   totalCandidates: number;
   historyTableUsed: boolean;
+  matchedSegments?: string[];
+  unmatchedSegments?: string[];
   filterWarning?: string | null;
 }
 
+// Recommended database/table for email marketing (has email field with large dataset)
+const RECOMMENDED_DB_PATTERN = /astro.?db|astro db data/i;
+
 export default function EmailMarketing() {
   const { toast } = useToast();
-  const [currentStep, setCurrentStep] = useState(1);
-
-  // Data Source State
-  const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
-    null,
-  );
-  const [selectedMasterTableId, setSelectedMasterTableId] = useState<
-    number | null
-  >(null);
-
-  // NEW: State for the fixed Global Suppression Table
-  const [globalSuppressionTableId, setGlobalSuppressionTableId] = useState<
-    number | null
-  >(null);
-
-  // Campaign State
+  
+  const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(null);
+  const [selectedMasterTableId, setSelectedMasterTableId] = useState<number | null>(null);
+  const [selectedHistoryTableId, setSelectedHistoryTableId] = useState<number | null>(null);
   const [concept, setConcept] = useState("");
-  const [marketingCode, setMarketingCode] = useState("");
   const [birthdayFilter, setBirthdayFilter] = useState("");
   const [excludeDays, setExcludeDays] = useState("7");
   const [contactCap, setContactCap] = useState("5000");
-
-  // Results State
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
-  const [analysisResult, setAnalysisResult] = useState<any>(null);
-  const [previewResult, setPreviewResult] = useState<PreviewResponse | null>(
-    null,
-  );
+  const [analysisResult, setAnalysisResult] = useState<AIAnalysisResponse | null>(null);
+  const [previewResult, setPreviewResult] = useState<PreviewResponse | null>(null);
+  const [validationResult, setValidationResult] = useState<any>(null);
+  const [showValidation, setShowValidation] = useState(false);
 
-  const isStep1Complete = !!selectedDatabaseId && !!selectedMasterTableId;
-  const isStep2Complete =
-    isStep1Complete &&
-    concept.trim().length > 0 &&
-    marketingCode.trim().length > 0;
-
-  // --- QUERIES ---
-
-  // 1. Fetch All Databases
-  const { data: databases } = useQuery<MetabaseDatabase[]>({
+  // Fetch databases
+  const { data: databases, isLoading: isLoadingDatabases } = useQuery<MetabaseDatabase[]>({
     queryKey: ["/api/metabase/databases"],
   });
 
-  // 2. Fetch Tables for the User Selected DB (T1 Source)
-  const { data: tables } = useQuery<MetabaseTable[]>({
+  // Auto-select recommended database when available
+  useEffect(() => {
+    if (databases && databases.length > 0 && !selectedDatabaseId) {
+      const recommended = databases.find(db => RECOMMENDED_DB_PATTERN.test(db.name));
+      if (recommended) {
+        setSelectedDatabaseId(recommended.id);
+      }
+    }
+  }, [databases, selectedDatabaseId]);
+
+  // Fetch tables when database is selected
+  const { data: tables, isLoading: isLoadingTables } = useQuery<MetabaseTable[]>({
     queryKey: ["/api/metabase/databases", selectedDatabaseId, "tables"],
     enabled: !!selectedDatabaseId,
   });
 
-  // 3. NEW: Logic to find the Global Suppression Table automatically
-  // We first find the Suppression DB, then fetch its tables to find the specific history table.
-  const suppressionDb = databases?.find(
-    (db) => db.name === "Marketing_Global_Suppression",
-  );
-
-  const { data: suppressionTables } = useQuery<MetabaseTable[]>({
-    queryKey: ["/api/metabase/databases", suppressionDb?.id, "tables"],
-    enabled: !!suppressionDb,
+  // Fetch fields for master table (T1)
+  const { data: masterTableFields } = useQuery<Array<{ id: number; name: string; display_name?: string; base_type: string }>>({
+    queryKey: ["/api/metabase/tables", selectedMasterTableId, "fields"],
+    enabled: !!selectedMasterTableId,
   });
 
-  // 4. NEW: Auto-select the specific table when found
-  useEffect(() => {
-    if (suppressionTables) {
-      const historyTable = suppressionTables.find(
-        (t) => t.name === "tbl_Global_Campaign_History",
-      );
-      if (historyTable) {
-        setGlobalSuppressionTableId(historyTable.id);
-      }
-    }
-  }, [suppressionTables]);
+  // Fetch fields for history table (T2)
+  const { data: historyTableFields } = useQuery<Array<{ id: number; name: string; display_name?: string; base_type: string }>>({
+    queryKey: ["/api/metabase/tables", selectedHistoryTableId, "fields"],
+    enabled: !!selectedHistoryTableId,
+  });
 
-  // --- MUTATIONS ---
+  // Auto-detect tables based on field patterns
+  useEffect(() => {
+    if (tables && tables.length > 0) {
+      // Reset selections when database changes
+      setSelectedMasterTableId(null);
+      setSelectedHistoryTableId(null);
+      setAnalysisResult(null);
+      setPreviewResult(null);
+      setSelectedSegments([]);
+    }
+  }, [selectedDatabaseId, tables]);
+
+  // Check if master table has email field (expanded patterns to include used_for_mailing)
+  const hasEmailField = masterTableFields?.some((f: any) => 
+    /email|e[-_]?mail|メール|mail.*address|mailing|used.?for.?mail/i.test(f.name) || /email|e[-_]?mail|メール|mailing|used.?for.?mail/i.test(f.display_name || "")
+  );
+
+  // Check if history table has sent date field
+  const hasSentDateField = historyTableFields?.some((f: any) =>
+    /sent|send|mail.*date|campaign.*date|配信日/i.test(f.name) || /sent|send|mail.*date|配信日/i.test(f.display_name || "")
+  );
 
   const analysisMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ai/analyze-concept-v2", {
+      const response = await apiRequest("POST", "/api/ai/analyze-concept-v2", {
         concept,
-        marketingCode,
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-
-        // CHANGED: Always send the fixed Global Suppression Table ID
-        historyTableId: globalSuppressionTableId,
-
+        historyTableId: selectedHistoryTableId,
         birthdayFilter,
         excludeDays: parseInt(excludeDays) || 7,
         contactCap: parseInt(contactCap) || 5000,
       });
-      return res.json();
+      return response.json();
     },
-    onSuccess: (data) => {
+    onSuccess: (data: AIAnalysisResponse) => {
       setAnalysisResult(data);
-      setSelectedSegments(data.suggestions.map((s: any) => s.segment));
+      setSelectedSegments(data.suggestions.map(s => s.segment));
       toast({
         title: "Analysis complete",
-        description: "AI suggested segments are ready.",
+        description: `Found ${data.suggestions.length} suggested segments`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Analysis failed",
+        description: error instanceof Error ? error.message : "Failed to analyze concept",
+        variant: "destructive",
       });
     },
   });
 
   const previewMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ai/preview-v2", {
+      const response = await apiRequest("POST", "/api/ai/preview-v2", {
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
+        historyTableId: selectedHistoryTableId,
         segments: selectedSegments,
-        marketingCode,
+        ageRange: analysisResult?.suggestedAgeRange,
+        birthdayFilter,
+        excludeDays: parseInt(excludeDays) || 7,
+        contactCap: parseInt(contactCap) || 5000,
       });
-      return res.json();
+      return response.json();
     },
-    onSuccess: (data) => setPreviewResult(data),
+    onSuccess: (data: PreviewResponse) => {
+      setPreviewResult(data);
+      toast({
+        title: "Preview ready",
+        description: `Found ${data.count.toLocaleString()} matching contacts`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Preview failed",
+        description: error instanceof Error ? error.message : "Failed to generate preview",
+        variant: "destructive",
+      });
+    },
   });
 
   const exportMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ai/export-v2", {
+      const response = await apiRequest("POST", "/api/ai/export-v2", {
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-        marketingCode,
+        historyTableId: selectedHistoryTableId,
         segments: selectedSegments,
+        ageRange: analysisResult?.suggestedAgeRange,
+        birthdayFilter,
+        excludeDays: parseInt(excludeDays) || 7,
+        contactCap: parseInt(contactCap) || 5000,
       });
-      return res.blob();
+      return response.blob();
     },
     onSuccess: (blob) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `campaign-${marketingCode || "export"}.csv`;
+      a.download = `email-campaign-${new Date().toISOString().split("T")[0]}.csv`;
       a.click();
-
-      // OPTIONAL: Add a toast here confirming that write-back to Global Suppression was triggered
+      URL.revokeObjectURL(url);
       toast({
-        title: "Export & Log Complete",
-        description: `Exported successfully. Logged to Global Suppression with code: ${marketingCode}`,
-        variant: "default",
+        title: "Export complete",
+        description: "Your mailing list has been downloaded",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Export failed",
+        description: error instanceof Error ? error.message : "Failed to export list",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const validateMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/email-marketing/validate-table", {
+        databaseId: selectedDatabaseId,
+        tableId: selectedMasterTableId,
+      });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setValidationResult(data);
+      setShowValidation(true);
+      toast({
+        title: "Table validated",
+        description: `Found ${data.totalCount.toLocaleString()} records with ${data.fieldCount} fields`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Validation failed",
+        description: error instanceof Error ? error.message : "Failed to validate table",
+        variant: "destructive",
       });
     },
   });
 
   const handleSegmentToggle = (segment: string) => {
-    setSelectedSegments((prev) =>
+    setSelectedSegments(prev =>
       prev.includes(segment)
-        ? prev.filter((s) => s !== segment)
-        : [...prev, segment],
+        ? prev.filter(s => s !== segment)
+        : [...prev, segment]
     );
+  };
+
+  // Auto-trigger preview when segments are selected/changed
+  useEffect(() => {
+    if (selectedSegments.length > 0 && selectedDatabaseId && selectedMasterTableId && !previewMutation.isPending) {
+      const timer = setTimeout(() => {
+        previewMutation.mutate();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedSegments, selectedDatabaseId, selectedMasterTableId]);
+
+  const handleAnalyze = () => {
+    if (!selectedDatabaseId) {
+      toast({
+        title: "Missing database",
+        description: "Please select a database first",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!selectedMasterTableId) {
+      toast({
+        title: "Missing master table",
+        description: "Please select T1 (Master Email List) table",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!concept.trim()) {
+      toast({
+        title: "Missing concept",
+        description: "Please enter a campaign concept description",
+        variant: "destructive",
+      });
+      return;
+    }
+    analysisMutation.mutate();
   };
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
-      {/* Page Header (Static) */}
       <div className="flex items-center gap-3 mb-6">
         <Mail className="h-7 w-7 text-primary" />
         <div>
           <h1 className="text-2xl font-bold">Email Marketing Tool</h1>
           <p className="text-sm text-muted-foreground">
-            AI-powered email list generation with Global Suppression
+            AI-powered email list generation with two-table architecture
           </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 items-start">
-        <div className="space-y-6">
-          {/* Main Wizard Card */}
-          <Card className="shadow-md border-primary/10 overflow-hidden">
-            {/* Stepper Header */}
-            <CardHeader className="border-b bg-muted/30 py-4">
-              <div className="flex items-center justify-center gap-12">
-                <Step
-                  number={1}
-                  title="Data Source"
-                  isActive={currentStep === 1}
-                  isCompleted={isStep1Complete && currentStep !== 1}
-                />
-                <div className="h-px w-16 bg-border" />
-                <Step
-                  number={2}
-                  title="Campaign Concept"
-                  isActive={currentStep === 2}
-                  isCompleted={isStep2Complete}
-                />
-              </div>
-            </CardHeader>
+      {/* Architecture Info Banner */}
+      <Card className="border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-3">
+            <Info className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+            <div className="text-sm">
+              <p className="font-medium text-blue-800 dark:text-blue-300">Two-Table Architecture</p>
+              <p className="text-blue-700 dark:text-blue-400 text-xs mt-1">
+                <strong>T1 (Master List):</strong> Contains contact data (Email, Name, DOB, Segment, Source)<br/>
+                <strong>T2 (History Log):</strong> Contains behavior data (Email, CampaignID, SentDate, Opened, Clicked) - used for exclusions and engagement scoring
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-            <CardContent className="pt-6 min-h-[400px]">
-              {currentStep === 1 ? (
-                /* STEP 1: DATA SOURCE */
-                <div className="space-y-6 animate-in fade-in slide-in-from-left-2 duration-300">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6">
+        <div className="space-y-6">
+          {/* Data Source Selection */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Data Source Configuration
+              </CardTitle>
+              <CardDescription>
+                Select the database and configure the two-table architecture
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Database Selection */}
+              <div className="space-y-2">
+                <Label>Database</Label>
+                <Select
+                  value={selectedDatabaseId?.toString() || ""}
+                  onValueChange={(v) => setSelectedDatabaseId(parseInt(v))}
+                  disabled={isLoadingDatabases}
+                >
+                  <SelectTrigger data-testid="select-database">
+                    <SelectValue placeholder={isLoadingDatabases ? "Loading..." : "Select database"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {databases?.map((db) => (
+                      <SelectItem key={db.id} value={db.id.toString()}>
+                        {db.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {tables && tables.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                  {/* T1: Master Email List */}
                   <div className="space-y-2">
-                    <Label>Metabase Database (Source)</Label>
+                    <div className="flex items-center gap-2">
+                      <Label className="flex items-center gap-1">
+                        <Users className="h-4 w-4" />
+                        T1: Master Email List
+                      </Label>
+                      <Badge variant="destructive" className="text-xs">Required</Badge>
+                    </div>
                     <Select
-                      value={selectedDatabaseId?.toString() || ""}
-                      onValueChange={(v) => setSelectedDatabaseId(parseInt(v))}
+                      value={selectedMasterTableId?.toString() || ""}
+                      onValueChange={(v) => setSelectedMasterTableId(parseInt(v))}
+                      disabled={isLoadingTables}
                     >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select database" />
+                      <SelectTrigger data-testid="select-master-table">
+                        <SelectValue placeholder="Select master table (T1)" />
                       </SelectTrigger>
                       <SelectContent>
-                        {databases?.map((db) => (
-                          <SelectItem key={db.id} value={db.id.toString()}>
-                            {db.name}
+                        {tables.map((table) => (
+                          <SelectItem key={table.id} value={table.id.toString()}>
+                            {table.display_name || table.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-
-                  {selectedDatabaseId && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-2">
-                        <Label className="flex items-center gap-2">
-                          T1: Master Email List{" "}
-                          <Badge
-                            variant="destructive"
-                            className="h-4 px-1 text-[10px]"
-                          >
-                            Required
-                          </Badge>
-                        </Label>
-                        <Select
-                          value={selectedMasterTableId?.toString() || ""}
-                          onValueChange={(v) =>
-                            setSelectedMasterTableId(parseInt(v))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select master table" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {tables?.map((t) => (
-                              <SelectItem key={t.id} value={t.id.toString()}>
-                                {t.display_name || t.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* CHANGED: Replaced Dropdown with Static Suppression Info */}
-                      <div className="space-y-2">
-                        <Label className="flex items-center gap-2">
-                          T2: Suppression List{" "}
-                          <Badge
-                            variant="default"
-                            className="h-4 px-1 text-[10px] bg-green-600 hover:bg-green-700"
-                          >
-                            Active
-                          </Badge>
-                        </Label>
-                        <div className="h-10 rounded-md border border-input bg-muted/50 px-3 py-2 text-sm flex items-center gap-2 text-muted-foreground">
-                          <ShieldCheck className="h-4 w-4 text-green-600" />
-                          {globalSuppressionTableId
-                            ? "Marketing_Global_Suppression"
-                            : "Searching for Suppression DB..."}
+                    {selectedMasterTableId && (
+                      <div className="flex items-center gap-2">
+                        <div className={`text-xs p-2 rounded-md flex items-center gap-1 flex-1 ${hasEmailField ? 'bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400' : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'}`}>
+                          {hasEmailField ? (
+                            <><CheckCircle2 className="h-3 w-3" /> Email field detected</>
+                          ) : (
+                            <><AlertCircle className="h-3 w-3" /> No email field - will use name/address</>
+                          )}
                         </div>
-                        <p className="text-[10px] text-muted-foreground pl-1">
-                          Automatically checks 'tbl_Global_Campaign_History'
-                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => validateMutation.mutate()}
+                          disabled={validateMutation.isPending}
+                          data-testid="button-validate-table"
+                        >
+                          {validateMutation.isPending ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            "Validate"
+                          )}
+                        </Button>
                       </div>
-                    </div>
-                  )}
-
-                  <div className="flex justify-end pt-6 border-t mt-auto">
-                    <Button
-                      disabled={!isStep1Complete || !globalSuppressionTableId}
-                      onClick={() => setCurrentStep(2)}
-                      className="gap-2"
-                    >
-                      Next: Define Concept <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                /* STEP 2: CAMPAIGN CONCEPT */
-                <div className="space-y-6 animate-in fade-in slide-in-from-right-2 duration-300">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2 col-span-2">
-                      <Label>Campaign Description (Fuzzy Input)</Label>
-                      <Textarea
-                        placeholder="e.g. Luxury travel promotion for middle-aged customers..."
-                        value={concept}
-                        onChange={(e) => setConcept(e.target.value)}
-                        className="min-h-[100px]"
-                      />
-                    </div>
-                    <div className="space-y-2 col-span-2">
-                      <Label>Marketing Code (Required for Logging)</Label>
-                      <Input
-                        placeholder="e.g. L003"
-                        value={marketingCode}
-                        onChange={(e) => setMarketingCode(e.target.value)}
-                      />
-                      <p className="text-[10px] text-muted-foreground">
-                        This code will be logged to the Global Suppression list
-                        upon export.
-                      </p>
-                    </div>
+                    )}
                   </div>
 
-                  <Separator />
-
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <Label className="text-xs font-bold uppercase text-muted-foreground">
-                        Birthday
+                  {/* T2: History/Behavior Log */}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Label className="flex items-center gap-1">
+                        <History className="h-4 w-4" />
+                        T2: History/Behavior Log
                       </Label>
-                      <Input
-                        value={birthdayFilter}
-                        onChange={(e) => setBirthdayFilter(e.target.value)}
-                        placeholder="March"
-                      />
+                      <Badge variant="secondary" className="text-xs">Optional</Badge>
                     </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs font-bold uppercase text-muted-foreground">
-                        Suppression (Days)
-                      </Label>
-                      <Input
-                        type="number"
-                        value={excludeDays}
-                        onChange={(e) => setExcludeDays(e.target.value)}
-                      // CHANGED: Always enabled since we always have a suppression table now
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs font-bold uppercase text-muted-foreground">
-                        Cap
-                      </Label>
-                      <Input
-                        type="number"
-                        value={contactCap}
-                        onChange={(e) => setContactCap(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex justify-between pt-6 border-t mt-auto">
-                    <Button
-                      variant="ghost"
-                      onClick={() => setCurrentStep(1)}
-                      className="gap-2"
+                    <Select
+                      value={selectedHistoryTableId?.toString() || "none"}
+                      onValueChange={(v) => setSelectedHistoryTableId(v === "none" ? null : parseInt(v))}
+                      disabled={isLoadingTables}
                     >
-                      <ChevronLeft className="h-4 w-4" /> Back to Setup
-                    </Button>
-                    <Button
-                      onClick={() => analysisMutation.mutate()}
-                      disabled={analysisMutation.isPending || !isStep2Complete}
-                      className="gap-2 min-w-[180px]"
-                    >
-                      {analysisMutation.isPending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Sparkles className="h-4 w-4" />
-                      )}
-                      Analyze Concept
-                    </Button>
+                      <SelectTrigger data-testid="select-history-table">
+                        <SelectValue placeholder="Select history table (T2)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No history table</SelectItem>
+                        {tables.map((table) => (
+                          <SelectItem key={table.id} value={table.id.toString()}>
+                            {table.display_name || table.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedHistoryTableId && (
+                      <div className={`text-xs p-2 rounded-md flex items-center gap-1 ${hasSentDateField ? 'bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400' : 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'}`}>
+                        {hasSentDateField ? (
+                          <><CheckCircle2 className="h-3 w-3" /> SentDate field detected - exclusions enabled</>
+                        ) : (
+                          <><AlertCircle className="h-3 w-3" /> No SentDate field found</>
+                        )}
+                      </div>
+                    )}
+                    {!selectedHistoryTableId && (
+                      <div className="text-xs p-2 rounded-md bg-muted/50 text-muted-foreground">
+                        Without T2, the "Exclude Recently Sent" filter will not work
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* ... [Rest of the file remains the same: Analysis Result & Sidebar] ... */}
+          {/* Validation Results Panel */}
+          {showValidation && validationResult && (
+            <Card className="border-blue-200 dark:border-blue-800">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Database className="h-4 w-4" />
+                    Table Validation Results
+                  </CardTitle>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowValidation(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="p-2 rounded-md bg-muted/50">
+                    <div className="text-muted-foreground text-xs">Total Records</div>
+                    <div className="font-bold text-lg">{validationResult.totalCount?.toLocaleString() || 0}</div>
+                  </div>
+                  <div className="p-2 rounded-md bg-muted/50">
+                    <div className="text-muted-foreground text-xs">Fields</div>
+                    <div className="font-bold text-lg">{validationResult.fieldCount || 0}</div>
+                  </div>
+                  <div className={`p-2 rounded-md ${validationResult.emailFieldDetected ? 'bg-green-50 dark:bg-green-950/30' : 'bg-amber-50 dark:bg-amber-950/30'}`}>
+                    <div className="text-muted-foreground text-xs">Email Field</div>
+                    <div className="font-bold">{validationResult.emailFieldDetected ? validationResult.emailFieldName : "Not Found"}</div>
+                  </div>
+                  <div className="p-2 rounded-md bg-muted/50">
+                    <div className="text-muted-foreground text-xs">Sample Rows</div>
+                    <div className="font-bold text-lg">{validationResult.sampleRowCount || 0}</div>
+                  </div>
+                </div>
+                
+                {validationResult.totalCount === 0 && (
+                  <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800">
+                    <div className="flex items-start gap-2 text-sm text-red-700 dark:text-red-400">
+                      <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div>
+                        <strong>No data found in this table!</strong> This could mean:
+                        <ul className="mt-1 ml-4 list-disc text-xs">
+                          <li>The table is empty</li>
+                          <li>Permission issues accessing the data</li>
+                          <li>The query is failing silently</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {validationResult.sampleData && validationResult.sampleData.length > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Sample Data (First 3 Rows)</Label>
+                    <ScrollArea className="h-32 border rounded-md p-2">
+                      <pre className="text-xs">{JSON.stringify(validationResult.sampleData, null, 2)}</pre>
+                    </ScrollArea>
+                  </div>
+                )}
+                
+                {validationResult.fields && validationResult.fields.length > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Available Fields ({validationResult.fields.length})</Label>
+                    <div className="flex flex-wrap gap-1">
+                      {validationResult.fields.slice(0, 20).map((f: any) => (
+                        <Badge key={f.id} variant="outline" className="text-xs">
+                          {f.name}
+                        </Badge>
+                      ))}
+                      {validationResult.fields.length > 20 && (
+                        <Badge variant="secondary" className="text-xs">
+                          +{validationResult.fields.length - 20} more
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Campaign Concept */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5" />
+                Campaign Concept
+              </CardTitle>
+              <CardDescription>
+                Describe your campaign and the AI will suggest relevant customer segments
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="concept">Campaign Description (Fuzzy Input)</Label>
+                <Textarea
+                  id="concept"
+                  placeholder='e.g., "We are running a Sakura Season early bird travel promotion focused on luxury packages for older demographics interested in cultural events."'
+                  value={concept}
+                  onChange={(e) => setConcept(e.target.value)}
+                  className="min-h-32 resize-none"
+                  data-testid="input-concept"
+                />
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Hard Filters (Explicit Constraints)</Label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="birthday" className="text-xs text-muted-foreground">Birthday Filter</Label>
+                    <Input
+                      id="birthday"
+                      placeholder="e.g., next month"
+                      value={birthdayFilter}
+                      onChange={(e) => setBirthdayFilter(e.target.value)}
+                      data-testid="input-birthday-filter"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="exclude" className="text-xs text-muted-foreground">
+                      Exclude Recently Sent (days)
+                      {!selectedHistoryTableId && <span className="text-amber-600"> *requires T2</span>}
+                    </Label>
+                    <Input
+                      id="exclude"
+                      type="number"
+                      min="0"
+                      value={excludeDays}
+                      onChange={(e) => setExcludeDays(e.target.value)}
+                      disabled={!selectedHistoryTableId}
+                      data-testid="input-exclude-days"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cap" className="text-xs text-muted-foreground">Contact Cap</Label>
+                    <Input
+                      id="cap"
+                      type="number"
+                      min="1"
+                      value={contactCap}
+                      onChange={(e) => setContactCap(e.target.value)}
+                      data-testid="input-contact-cap"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <Button
+                onClick={handleAnalyze}
+                disabled={analysisMutation.isPending || !concept.trim() || !selectedDatabaseId || !selectedMasterTableId}
+                className="w-full"
+                data-testid="button-analyze"
+              >
+                {analysisMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Analyzing with AI...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Analyze Concept with AI
+                  </>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* AI Suggestions */}
           {analysisResult && (
-            <Card className="animate-in slide-in-from-bottom-4 duration-500 border-primary/20">
+            <Card>
               <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Users className="h-5 w-5 text-primary" />
-                  AI Suggested Targeting Logic
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5" />
+                  AI-Suggested Targeting Logic
                 </CardTitle>
-                <CardDescription>{analysisResult.reasoning}</CardDescription>
+                <CardDescription>
+                  {analysisResult.reasoning}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  {analysisResult.suggestions.map((s: any) => (
-                    <div
-                      key={s.segment}
-                      className="flex items-center gap-3 p-3 bg-muted/30 border rounded-lg hover:border-primary/50 transition-colors cursor-pointer"
-                      onClick={() => handleSegmentToggle(s.segment)}
-                    >
-                      <Checkbox
-                        checked={selectedSegments.includes(s.segment)}
-                      />
-                      <div className="flex-1 text-sm">
-                        <p className="font-semibold">{s.segment}</p>
-                        <p className="text-xs text-muted-foreground leading-relaxed">
-                          {s.reasoning}
-                        </p>
-                      </div>
-                      <Badge variant="secondary">
-                        {Math.round(s.confidence * 100)}% Match
-                      </Badge>
-                    </div>
-                  ))}
+                <div className="p-3 rounded-md bg-primary/5 border border-primary/20">
+                  <div className="text-xs font-medium text-primary mb-2 flex items-center gap-1">
+                    <Database className="h-3 w-3" />
+                    Targeting Filters (based on T1 schema analysis)
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    AI analyzed your Master List schema and suggests these filters. Real data will be fetched from Metabase when you generate preview.
+                  </div>
                 </div>
+
+                <div className="space-y-2">
+                  {analysisResult.suggestions.map((suggestion) => {
+                    const parsed = parseSegmentFormat(suggestion.segment);
+                    return (
+                      <div
+                        key={suggestion.segment}
+                        className="flex items-start gap-3 p-3 rounded-md bg-muted/50 hover-elevate cursor-pointer"
+                        onClick={() => handleSegmentToggle(suggestion.segment)}
+                        data-testid={`segment-${suggestion.segment.replace(/[^a-zA-Z0-9]/g, '-')}`}
+                      >
+                        <Checkbox
+                          checked={selectedSegments.includes(suggestion.segment)}
+                          className="shrink-0 mt-0.5"
+                        />
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {parsed.tableName && (
+                              <Badge variant="outline" className="text-xs font-mono">
+                                {parsed.tableName}
+                              </Badge>
+                            )}
+                            <span className="font-medium text-sm">{parsed.fieldName}</span>
+                            <span className="text-muted-foreground">=</span>
+                            <Badge className="text-xs">
+                              {parsed.value || suggestion.segment}
+                            </Badge>
+                            <Badge variant="secondary" className="text-xs ml-auto">
+                              {Math.round(suggestion.confidence * 100)}% match
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {suggestion.reasoning}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {selectedSegments.length > 0 && (
+                  <div className="p-3 rounded-md bg-muted/30 border">
+                    <div className="text-xs font-medium mb-2">Selected Query Logic:</div>
+                    <div className="font-mono text-xs text-muted-foreground space-y-1">
+                      {selectedSegments.map((seg, idx) => {
+                        const parsed = parseSegmentFormat(seg);
+                        return (
+                          <div key={seg} className="flex items-center gap-1">
+                            {idx > 0 && <span className="text-primary font-bold">OR</span>}
+                            <span>
+                              {parsed.tableName && <span className="text-blue-500">{parsed.tableName}.</span>}
+                              <span className="text-green-600">{parsed.fieldName}</span>
+                              <span> = </span>
+                              <span className="text-amber-600">"{parsed.value}"</span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {selectedHistoryTableId && (
+                      <div className="mt-2 pt-2 border-t font-mono text-xs text-red-600 dark:text-red-400">
+                        EXCLUDE: T2.SentDate &gt; NOW() - {excludeDays} days
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {analysisResult.suggestedAgeRange && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">Suggested age range:</span>
+                    <Badge>{analysisResult.suggestedAgeRange}</Badge>
+                  </div>
+                )}
+
                 <Button
                   onClick={() => previewMutation.mutate()}
-                  disabled={
-                    previewMutation.isPending || selectedSegments.length === 0
-                  }
+                  disabled={previewMutation.isPending || selectedSegments.length === 0}
                   className="w-full"
-                  variant="outline"
+                  data-testid="button-generate-preview"
                 >
                   {previewMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Fetching Real Data...
+                    </>
                   ) : (
-                    <Send className="h-4 w-4 mr-2" />
+                    <>
+                      <Send className="h-4 w-4 mr-2" />
+                      Generate Preview (Query Database)
+                    </>
                   )}
-                  Generate Preview from Database
                 </Button>
               </CardContent>
             </Card>
           )}
         </div>
 
-        {/* Static Sidebar: Preview & Export */}
-        <div className="sticky top-6">
-          <Card className="border-t-4 border-t-primary shadow-lg h-fit">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg">Preview & Export</CardTitle>
+        {/* Preview & Export Panel */}
+        <div className="space-y-6">
+          <Card className="sticky top-4">
+            <CardHeader>
+              <CardTitle>Preview & Export</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {!previewResult ? (
-                <div className="text-center py-12 px-4 space-y-4 text-muted-foreground">
-                  <Users className="h-12 w-12 mx-auto opacity-20" />
-                  <p className="text-xs leading-relaxed">
-                    Set up your data and campaign concept to generate a mailing
-                    list.
+                <div className="text-center py-8 text-muted-foreground">
+                  <Users className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                  <p className="text-sm">
+                    Select T1 table, enter a campaign concept and click "Analyze" to get started
                   </p>
                 </div>
               ) : (
-                <div className="space-y-6 animate-in fade-in duration-500">
-                  <div className="text-center py-6 bg-primary/5 rounded-xl border border-primary/10">
-                    <p className="text-4xl font-black text-primary">
+                <>
+                  {/* Stats Summary */}
+                  <div className="text-center py-4 px-4 rounded-lg bg-muted/50">
+                    <span className="text-4xl font-bold" data-testid="text-preview-count">
                       {previewResult.count.toLocaleString()}
-                    </p>
-                    <p className="text-[10px] font-bold text-muted-foreground mt-2 uppercase tracking-widest">
-                      Matched Contacts
+                    </span>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      final matching contacts
                     </p>
                   </div>
 
+                  {/* Detailed Stats */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded-md bg-muted/30 text-center">
+                      <div className="font-medium text-muted-foreground">Total Candidates</div>
+                      <div className="font-bold">{previewResult.totalCandidates?.toLocaleString() || previewResult.count.toLocaleString()}</div>
+                    </div>
+                    <div className={`p-2 rounded-md text-center ${previewResult.excludedCount > 0 ? 'bg-red-50 dark:bg-red-950/30' : 'bg-muted/30'}`}>
+                      <div className="font-medium text-muted-foreground">Excluded (Recently Sent)</div>
+                      <div className={`font-bold ${previewResult.excludedCount > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>
+                        {previewResult.excludedCount.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {previewResult.filterWarning && (
+                    <div className="p-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                      <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400 font-medium">
+                        <AlertCircle className="h-3 w-3" />
+                        {previewResult.filterWarning}
+                      </div>
+                    </div>
+                  )}
+
+                  {previewResult.historyTableUsed && (
+                    <div className="p-2 rounded-md bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
+                      <div className="flex items-center gap-2 text-xs text-green-700 dark:text-green-400 font-medium">
+                        <CheckCircle2 className="h-3 w-3" />
+                        T2 History table used for exclusions
+                      </div>
+                    </div>
+                  )}
+
+                  <Separator />
+
                   <div className="space-y-2">
-                    <Label className="text-[11px] font-bold uppercase text-muted-foreground">
-                      Sample Data
-                    </Label>
-                    <ScrollArea className="h-[280px] rounded-lg border bg-muted/10">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            {previewResult.sample.length > 0 &&
-                              Object.keys(previewResult.sample[0]).map((key) => (
-                                <TableHead key={key} className="text-[11px] h-8 font-bold">
-                                  {key}
-                                </TableHead>
-                              ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {previewResult.sample.map((row, i) => (
-                            <TableRow key={i} className="h-8">
-                              {Object.values(row).map((val, j) => (
-                                <TableCell key={j} className="py-1 text-[11px] max-w-[200px] truncate" title={String(val)}>
-                                  {val !== null && val !== undefined ? String(val) : ""}
-                                </TableCell>
-                              ))}
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                    <Label className="text-xs text-muted-foreground">Sample Contacts (Real Data from Metabase)</Label>
+                    {previewResult.sample.every(c => c.email === "N/A") && (
+                      <div className="p-2 rounded-md bg-amber-50 dark:bg-amber-950/20 text-xs text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                        No email field detected in T1. Names and addresses are available for mailing.
+                      </div>
+                    )}
+                    <ScrollArea className="h-48">
+                      <div className="space-y-2">
+                        {previewResult.sample.map((contact, idx) => (
+                          <div
+                            key={idx}
+                            className="p-2 rounded-md bg-muted/30 text-xs"
+                            data-testid={`sample-contact-${idx}`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <p className="font-medium truncate">{contact.name}</p>
+                              {contact.engagementScore !== undefined && (
+                                <Badge variant="outline" className="text-xs shrink-0">
+                                  Score: {contact.engagementScore}
+                                </Badge>
+                              )}
+                            </div>
+                            {contact.email && contact.email !== "N/A" && (
+                              <p className="text-muted-foreground truncate">{contact.email}</p>
+                            )}
+                            {contact.city && (
+                              <p className="text-muted-foreground truncate">
+                                {contact.city}{contact.state ? `, ${contact.state}` : ""}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </ScrollArea>
                   </div>
 
                   <Button
                     onClick={() => exportMutation.mutate()}
                     disabled={exportMutation.isPending}
-                    className="w-full h-12 text-lg font-bold"
+                    className="w-full"
+                    data-testid="button-export-csv"
                   >
                     {exportMutation.isPending ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Exporting...
+                      </>
                     ) : (
-                      <Download className="mr-2 h-5 w-5" />
+                      <>
+                        <Download className="h-4 w-4 mr-2" />
+                        Export CSV ({previewResult.count.toLocaleString()} contacts)
+                      </>
                     )}
-                    Export CSV
                   </Button>
-                </div>
+                </>
               )}
             </CardContent>
           </Card>

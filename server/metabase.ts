@@ -151,7 +151,7 @@ function buildFilterClause(filter: FilterValue): any[] {
       }
       return ["!=", fieldRef, filter.value];
     case "contains":
-      return ["contains", fieldRef, filter.value, { "case-sensitive": false }];
+      return ["contains", fieldRef, filter.value];
     case "starts_with":
       return ["starts-with", fieldRef, filter.value];
     case "ends_with":
@@ -171,12 +171,11 @@ function buildFilterClause(filter: FilterValue): any[] {
   }
 }
 
-// Helper function for count logic
 export async function getCount(
   databaseId: number,
   tableId: number,
   filters: FilterValue[],
-  limit: number = 1000, // Default limit
+  limit: number = 100000, // Default limit
 ): Promise<{ count: number; total: number; percentage: number }> {
   const totalQuery = {
     database: databaseId,
@@ -201,32 +200,9 @@ export async function getCount(
     return { count: total, total, percentage: 100 };
   }
 
-  // Group filters by field ID to handle multiple selections (OR logic) vs constraints (AND logic)
-  const filtersByField: Record<number, FilterValue[]> = {};
-
-  filters.forEach(f => {
-    if (!filtersByField[f.fieldId]) filtersByField[f.fieldId] = [];
-    filtersByField[f.fieldId].push(f);
-  });
-
-  const fieldClauses = Object.values(filtersByField).map(group => {
-    const isInclusion = group.every(f =>
-      ["equals", "contains", "starts_with", "ends_with"].includes(f.operator)
-    );
-
-    const clauses = group.map(buildFilterClause);
-
-    if (group.length === 1) return clauses[0];
-
-    if (isInclusion) {
-      return ["or", ...clauses];
-    } else {
-      return ["and", ...clauses];
-    }
-  });
-
+  const filterClauses = filters.map(buildFilterClause);
   const combinedFilter =
-    fieldClauses.length === 1 ? fieldClauses[0] : ["and", ...fieldClauses];
+    filterClauses.length === 1 ? filterClauses[0] : ["and", ...filterClauses];
 
   const countQuery = {
     database: databaseId,
@@ -298,20 +274,7 @@ export async function getMailingList(
   const fields = await getFields(tableId);
 
   // ... [Keep the existing field finding logic (nameFieldId, etc.)] ...
-  const findField = (patterns: string[], preferredType?: string): number | null => {
-    // First pass: look for exact/partial matches with preferred type
-    if (preferredType) {
-      for (const pattern of patterns) {
-        const field = fields.find(
-          (f) =>
-            (f.name.toLowerCase() === pattern || f.name.toLowerCase().includes(pattern)) &&
-            f.base_type === preferredType
-        );
-        if (field) return field.id;
-      }
-    }
-
-    // Second pass: any match
+  const findField = (patterns: string[]): number | null => {
     for (const pattern of patterns) {
       const field = fields.find(
         (f) =>
@@ -332,16 +295,10 @@ export async function getMailingList(
     "氏名",
     "名前",
     "顧客名",
-    "nm",
-    "fname",
-    "lname",
-    "l + f name",
-  ], "type/Text");
-
+  ]);
   const emailFieldId = findField([
     "email",
     "mail",
-    "e_mail",
     "e-mail",
     "email_address",
     "メール",
@@ -350,17 +307,12 @@ export async function getMailingList(
     "email_addr",
     "mailing",
     "used_for_mailing",
-    "contact_email",
-    "primary_email",
-  ], "type/Text"); // Prefer Text to avoid 'bit' columns
-
+  ]);
   const addressFieldId = findField([
     "address",
     "street",
-    "add1",
-    "add-1",
-    "add_1",
-    "addr",
+    "address1",
+    "street_address",
     "住所",
     "アドレス",
   ]);
@@ -369,7 +321,6 @@ export async function getMailingList(
     "state",
     "province",
     "region",
-    "prefecture",
     "都道府県",
     "県",
     "州",
@@ -433,29 +384,68 @@ export async function getMailingList(
     method: "POST",
     body: JSON.stringify(query),
   });
+
   // ... [Keep the existing column mapping and entry creation logic] ...
   const rows = result.data?.rows ?? [];
   const cols = result.data?.cols ?? [];
 
-  // DYNAMIC MAPPING: Map all available columns
-  const columnNames = cols.map((c: any) => c.name);
-
-  // Helper to identify "suppression-relevant" fields for the internal logic (still needed for limiting/filtering)
-  // We do a best-effort find for these, but the OUTPUT sample will contain EVERYTHING.
-  const nameIdx = cols.findIndex((c: any) => c.name.toLowerCase().includes("name") || c.name.toLowerCase().includes("nm"));
-  const emailIdx = cols.findIndex((c: any) => c.name.toLowerCase().includes("mail"));
-
-  // We still need strictly typed 'name' and 'email' for the logExportToSuppressionList logic if we were using it inside here,
-  // but for the PREVIEW (which this function mostly serves), we want everything.
-
-  const entries: Record<string, any>[] = rows.map((row: any[]) => {
-    const entry: Record<string, any> = {};
-    columnNames.forEach((colName: string, index: number) => {
-      // Clean up the value (handle nulls)
-      entry[colName] = row[index] ?? "";
-    });
-    return entry;
+  const colIndexMap: Record<string, number> = {};
+  cols.forEach((col: any, index: number) => {
+    const name = col.name.toLowerCase();
+    if (name.includes("name") && !("name" in colIndexMap))
+      colIndexMap.name = index;
+    if (
+      (name.includes("email") || name.includes("mail")) &&
+      !("email" in colIndexMap)
+    )
+      colIndexMap.email = index;
+    if (
+      (name.includes("address") || name.includes("street")) &&
+      !("address" in colIndexMap)
+    )
+      colIndexMap.address = index;
+    if (name.includes("city") && !("city" in colIndexMap))
+      colIndexMap.city = index;
+    if (
+      (name.includes("state") || name.includes("province")) &&
+      !("state" in colIndexMap)
+    )
+      colIndexMap.state = index;
+    if (
+      (name.includes("zip") || name.includes("postal")) &&
+      !("zipcode" in colIndexMap)
+    )
+      colIndexMap.zipcode = index;
+    if (name.includes("country") && !("country" in colIndexMap))
+      colIndexMap.country = index;
   });
+
+  const entries: MailingListEntry[] = rows.map((row: any[]) => ({
+    name:
+      colIndexMap.name !== undefined ? String(row[colIndexMap.name] ?? "") : "",
+    email:
+      colIndexMap.email !== undefined
+        ? String(row[colIndexMap.email] ?? "")
+        : "",
+    address:
+      colIndexMap.address !== undefined
+        ? String(row[colIndexMap.address] ?? "")
+        : "",
+    city:
+      colIndexMap.city !== undefined ? String(row[colIndexMap.city] ?? "") : "",
+    state:
+      colIndexMap.state !== undefined
+        ? String(row[colIndexMap.state] ?? "")
+        : "",
+    zipcode:
+      colIndexMap.zipcode !== undefined
+        ? String(row[colIndexMap.zipcode] ?? "")
+        : "",
+    country:
+      colIndexMap.country !== undefined
+        ? String(row[colIndexMap.country] ?? "")
+        : "",
+  }));
 
   // Pass scanLimit to getCount as well
   const countResult = await getCount(databaseId, tableId, filters, scanLimit);
@@ -628,150 +618,4 @@ export async function runNativeQuery(
     cols: result.data?.cols ?? [],
     rowCount: result.row_count ?? result.data?.rows?.length ?? 0,
   };
-}
-
-// --- GLOBAL SUPPRESSION HELPERS ---
-
-/**
- * Validates if the given table is the Global Campaign History table.
- */
-async function getHistoryTableInfo(tableId: number) {
-  // We need the database ID to run queries.
-  // We can fetch the table details from Metabase API (via our getTables helper would be inefficient, 
-  // maybe we need a getTableDetails helper or just search all tables).
-  // For now, let's assume we can query `GET /api/table/:id` logic or similar.
-  // Since we don't have a direct `getTable(id)` helper exposed yet, let's just use `runNativeQuery` logic 
-  // tailored to the suppression DB if passed, OR we iterate databases.
-  // OPTIMIZATION: The calling function usually knows the Database ID. 
-  // BUT `historyTableId` is passed alone. 
-  // New helper: Get Table Metadata by ID.
-  // Since we don't have it, let's hack it or add `getTable(tableId)`?
-  // Let's rely on the caller passing `databaseId` of the history table if possible, 
-  // but the schema only sends `historyTableId`.
-
-  // Workaround: We will fetch ALL tables (cached ideally) or just assume the DB ID 
-  // is accessible via the table ID in Metabase if we queried it.
-  // Let's implement a simple `getTableMetadata` first if needed.
-  // Actually, `getTables(databaseId)` returns a list. 
-  // We can try to find the table in the known "Marketing_Global_Suppression" DB?
-  // No, that's brittle.
-
-  // Let's add `getTable` to Metabase API client tools inside this file first?
-  // Or simpler: Just expect the caller to pass suppressionDbId AND suppressionTableId?
-  // The schema has `historyTableId`. 
-  // Let's implement `getTableDetails` for this.
-  return null; // Placeholder to structure the code block
-}
-
-// We need a way to get DB ID from Table ID.
-// Using an internal helper here.
-async function getTableDetails(tableId: number): Promise<MetabaseTable | null> {
-  // Metabase API: GET /api/table/:id
-  try {
-    const res = await metabaseRequest(`/api/table/${tableId}`);
-    return {
-      id: res.id,
-      name: res.name,
-      display_name: res.display_name,
-      schema: res.schema,
-      db_id: res.db.id, // Metabase usually returns db object
-    };
-  } catch (e) {
-    console.warn(`Failed to fetch table details for ${tableId}`, e);
-    return null;
-  }
-}
-
-
-export async function getSuppressedEmailsFromHistory(
-  historyTableId: number,
-  daysToCheck: number,
-  marketingCode: string | undefined
-): Promise<Set<string>> {
-  const table = await getTableDetails(historyTableId);
-  if (!table) return new Set();
-
-  const dbId = table.db_id;
-  const tableName = table.name; // Expect 'tbl_Global_Campaign_History'
-
-  // Construct WHERE clause
-  const conditions = [];
-
-  // 1. Recency Check
-  if (daysToCheck > 0) {
-    // Postgre/Standard SQL syntax usually works for Metabase Native
-    conditions.push(`export_date >= current_date - interval '${daysToCheck} days'`);
-  }
-
-  // 2. Campaign Code Check (Exclude duplicates for THIS campaign)
-  if (marketingCode) {
-    const safeCode = marketingCode.replace(/'/g, "''");
-    conditions.push(`campaign_code = '${safeCode}'`);
-  }
-
-  if (conditions.length === 0) return new Set();
-
-  const whereClause = conditions.join(" OR ");
-
-  // We assume the field containing the email/ref_id is named 'ref_id' or 'email'.
-  // Let's try 'ref_id' as per previous plan, or 'email'.
-  // Safer to SELECT * LIMIT 1 to check columns? Or just try 'ref_id'.
-  // Let's assume 'ref_id' based on my previous artifacts.
-
-  const sql = `SELECT DISTINCT ref_id FROM "${tableName}" WHERE ${whereClause}`;
-
-  try {
-    const result = await runNativeQuery(dbId, sql);
-    // Rows are usually arrays of values in Metabase Native Query response
-    // e.g. [[ "email1@test.com" ], [ "email2@test.com" ]]
-    // But verify the format. `runNativeQuery` returns { rows: [...] } NOT { data: { rows: ... } }
-
-    const rows = result.rows || [];
-    const emails = new Set<string>();
-
-    rows.forEach((row: any[]) => {
-      if (row[0]) emails.add(String(row[0]).toLowerCase());
-    });
-
-    console.log(`[Suppression] Found ${emails.size} suppressed contacts from table ${tableName}`);
-    return emails;
-  } catch (err) {
-    console.error("[Suppression] Failed to fetch suppression list:", err);
-    return new Set(); // Fail open
-  }
-}
-
-export async function logExportToHistory(
-  historyTableId: number,
-  marketingCode: string,
-  contacts: { email: string }[]
-) {
-  if (contacts.length === 0 || !marketingCode) return;
-
-  const table = await getTableDetails(historyTableId);
-  if (!table) return;
-
-  const dbId = table.db_id;
-  const tableName = table.name;
-  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-  const safeCode = marketingCode.replace(/'/g, "''");
-
-  // Chunking
-  const CHUNK_SIZE = 500;
-  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
-    const chunk = contacts.slice(i, i + CHUNK_SIZE);
-
-    const values = chunk
-      .map(c => `('${c.email.replace(/'/g, "''").toLowerCase()}', '${safeCode}', '${today}')`)
-      .join(", ");
-
-    const sql = `INSERT INTO "${tableName}" (ref_id, campaign_code, export_date) VALUES ${values}`;
-
-    try {
-      await runNativeQuery(dbId, sql);
-    } catch (err) {
-      console.error(`[Suppression] Failed to log chunk to ${tableName}:`, err);
-    }
-  }
-  console.log(`[Suppression] Logged ${contacts.length} contacts to history for ${marketingCode}`);
 }

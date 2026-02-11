@@ -17,7 +17,7 @@ export async function analyzeMarketingConcept(
   concept: string,
   fields: MetabaseField[]
 ): Promise<AnalysisResult> {
-  const fieldDescriptions = fields.map(f =>
+  const fieldDescriptions = fields.map(f => 
     `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`
   ).join("\n");
 
@@ -81,18 +81,18 @@ export async function analyzeMarketingConceptMultiTable(
 ): Promise<AnalysisResult> {
   // Create a description of all tables and their fields
   const tableDescriptions = tablesWithFields.map(table => {
-    const fieldList = table.fields.map(f =>
+    const fieldList = table.fields.map(f => 
       `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`
     ).join("\n");
     return `TABLE: ${table.display_name || table.name} (id: ${table.id})\n${fieldList}`;
   }).join("\n\n");
 
   // Check if the recommended email table exists
-  const hasRecommendedTable = tablesWithFields.some(t =>
-    t.name.toLowerCase().includes("acquired_rpt_hj") ||
+  const hasRecommendedTable = tablesWithFields.some(t => 
+    t.name.toLowerCase().includes("acquired_rpt_hj") || 
     t.name.toLowerCase().includes("jason_2005_2006")
   );
-
+  
   const recommendedTableNote = hasRecommendedTable ? `
 PRIORITY TABLE FOR EMAIL CAMPAIGNS:
 The table "Acquired Rpt Hj Rpt Jason 2005 2006" (or similar name containing "acquired_rpt_hj" or "jason_2005_2006") contains the PRIMARY email data with a large dataset. 
@@ -162,19 +162,12 @@ export async function analyzeMarketingConceptMasterTable(
   masterTableFields: MetabaseField[],
   masterTableName: string,
   historyTableFields: MetabaseField[] | null,
-  historyTableName: string | null,
-  fieldSamples?: Record<string, string[]> // Optional: Real data samples for context
+  historyTableName: string | null
 ): Promise<AnalysisResult> {
   // Create a description of T1 fields
-  const masterFieldList = masterTableFields.map(f => {
-    let desc = `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`;
-    // Append samples if available for this field
-    if (fieldSamples && fieldSamples[f.name] && fieldSamples[f.name].length > 0) {
-      const samples = fieldSamples[f.name].slice(0, 5).join(", ");
-      desc += ` (Sample Values: ${samples})`;
-    }
-    return desc;
-  }).join("\n");
+  const masterFieldList = masterTableFields.map(f => 
+    `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`
+  ).join("\n");
 
   // Create a description of T2 fields if available
   const historySection = historyTableFields && historyTableName ? `
@@ -206,7 +199,6 @@ IMPORTANT:
 - Suggest segments ONLY from T1 (Master Table) fields
 - Use format "field_name:value" (without table prefix since we're only querying T1)
 - The system will automatically handle T2 exclusions based on user settings
-- USE REAL VALUES from the "Sample Values" provided in the field descriptions where possible.
 
 Respond with a JSON object containing:
 {
@@ -276,7 +268,7 @@ export async function runTrendsICPAnalysis(
   fields: MetabaseField[],
   excludeMailed: boolean
 ): Promise<TrendsICPResult> {
-  const fieldDescriptions = fields.map(f =>
+  const fieldDescriptions = fields.map(f => 
     `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`
   ).join("\n");
 
@@ -416,9 +408,9 @@ CROSS-SELL OVERLAPS:
 - SY + GL Overlap: ${snapshot.syGlOverlap.toLocaleString()} customers buy both
 
 TOP 10 ICP SEGMENTS (by Avg Total LTV):
-${icpSegments.slice(0, 10).map((s, i) =>
-    `${i + 1}. ${s.gender || 'Unknown'} / ${s.ageGroup} / ${s.location}: ${s.customerCount.toLocaleString()} customers, Avg LTV ¥${s.avgTotalLtv.toLocaleString()}, Email: ${(s.emailRate * 100).toFixed(1)}%, Mobile: ${(s.mobileRate * 100).toFixed(1)}%`
-  ).join('\n')}`;
+${icpSegments.slice(0, 10).map((s, i) => 
+  `${i + 1}. ${s.gender || 'Unknown'} / ${s.ageGroup} / ${s.location}: ${s.customerCount.toLocaleString()} customers, Avg LTV ¥${s.avgTotalLtv.toLocaleString()}, Email: ${(s.emailRate * 100).toFixed(1)}%, Mobile: ${(s.mobileRate * 100).toFixed(1)}%`
+).join('\n')}`;
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -438,7 +430,7 @@ ${icpSegments.slice(0, 10).map((s, i) =>
     return {
       summary: "Unable to generate summary. Please try again.",
       topDemographic: "Analysis unavailable",
-      crossSellOpportunity: "Analysis unavailable",
+      crossSellOpportunity: "Analysis unavailable", 
       contactabilityWarning: "Analysis unavailable"
     };
   }
@@ -455,9 +447,9 @@ export async function runCustomAnalysis(prompt: string): Promise<CustomAnalysisR
 }
 
 export async function runCustomAnalysisWithData(
-  prompt: string,
-  tableSchema: any[] | null,
-  realData: any | null,
+  prompt: string, 
+  tableSchema: any[] | null, 
+  realData: any | null, 
   sampleData: any[]
 ): Promise<CustomAnalysisResult> {
   let systemPrompt: string;
@@ -494,7 +486,7 @@ Respond with a JSON object containing:
 }
 
 Use the actual data from the database. Include relevant columns and real values from the provided data.`;
-
+    
     userContent = prompt;
   } else {
     // No real data - use mock data approach
