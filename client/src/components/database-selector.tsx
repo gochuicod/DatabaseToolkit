@@ -101,13 +101,22 @@ export function DatabaseSelector({
               </SelectTrigger>
               <SelectContent>
                 {tables.map((table) => (
-                  <SelectItem key={table.id} value={table.id.toString()}>
-                    <div className="flex items-center gap-2">
-                      <Table className="h-4 w-4 text-muted-foreground" />
-                      <span>{table.display_name}</span>
-                      {table.schema && table.schema !== "public" && (
-                        <Badge variant="outline" className="text-xs">
-                          {table.schema}
+                  <SelectItem key={table.id} value={table.id.toString()} className="w-full">
+                    <div className="flex items-center justify-between w-full gap-4">
+                      <div className="flex items-center gap-2">
+                        <Table className="h-4 w-4 text-muted-foreground" />
+                        <span>{table.display_name}</span>
+                        {table.schema && table.schema !== "public" && (
+                          <Badge variant="outline" className="text-xs">
+                            {table.schema}
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* NEW: Display the row count badge */}
+                      {table.row_count !== undefined && (
+                        <Badge variant="secondary" className="text-xs ml-auto">
+                          {table.row_count.toLocaleString()} rows
                         </Badge>
                       )}
                     </div>

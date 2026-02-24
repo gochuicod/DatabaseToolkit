@@ -14,6 +14,48 @@ function getMetabaseUrl(): string {
   return url.replace(/\/+$/, "");
 }
 
+// Inside server/metabase.ts - Conceptual Query Builder
+export async function runMarketingExportAndLog(
+  databaseId: number,
+  masterTableId: number,
+  historyTableId: number,
+  campaignCode: string,
+  limit: number,
+) {
+  // 1. Generate the exclusionary SQL
+  const sql = `
+    SELECT t1.*
+    FROM [Master Table] AS t1
+    LEFT JOIN [Tbl Global Campaign History] AS t2 
+      ON t1.Email = t2.Reference_ID 
+      AND (
+          t2.Export_Date > CURRENT_DATE - INTERVAL '7 days' 
+          OR t2.Campaign_Code = '${campaignCode}'
+      )
+    WHERE t2.Reference_ID IS NULL
+    LIMIT ${limit};
+  `;
+
+  // 2. Run the native query via Metabase API
+  const exportData = await runNativeQuery(databaseId, sql);
+
+  // 3. The Write-Back (Log the export)
+  if (exportData.rows.length > 0) {
+    const values = exportData.rows
+      .map((row) => `('${row.email}', '${campaignCode}', CURRENT_DATE)`)
+      .join(",");
+
+    const insertSql = `
+      INSERT INTO [Tbl Global Campaign History] (Reference_ID, Campaign_Code, Export_Date)
+      VALUES ${values};
+    `;
+    // Execute write-back query quietly in the background
+    await runNativeQuery(databaseId, insertSql);
+  }
+
+  return exportData;
+}
+
 const METABASE_EMAIL = process.env.METABASE_EMAIL;
 const METABASE_PASSWORD = process.env.METABASE_PASSWORD;
 
@@ -613,9 +655,442 @@ export async function runNativeQuery(
     body: JSON.stringify(query),
   });
 
+  // NEW: Catch silent Metabase SQL errors and throw them to the frontend!
+  if (result.status === "failed" || result.error) {
+    const errorMsg = result.error || result.error_type || "Unknown SQL Error";
+    console.error("🚨 METABASE SQL ERROR:", errorMsg);
+
+    // This will force the red toast error on your screen so we can read it!
+    throw new Error(`SQL Server Error: ${errorMsg}`);
+  }
+
   return {
     rows: result.data?.rows ?? [],
     cols: result.data?.cols ?? [],
     rowCount: result.row_count ?? result.data?.rows?.length ?? 0,
   };
+}
+
+// --- MS SQL SERVER V2 FUNCTIONS (APPLICATION-LAYER JOIN) ---
+
+export async function getMarketingPreviewV2(
+  databaseId: number,
+  masterTableId: number,
+  historyDbId: number | null,
+  historyTableId: number | null,
+  segments: string[],
+  contactCap: number,
+  excludeDays: number,
+) {
+  const masterTables = await getTables(databaseId);
+  const masterTable = masterTables.find((t) => t.id === masterTableId);
+  if (!masterTable) throw new Error("Master table not found");
+
+  // 1. FETCH SUPPRESSED IDs FIRST (Step 1 of App-Join)
+  let suppressedIds = new Set<string>();
+  let suppressionRefFieldName: string | null = null;
+  if (historyDbId && historyTableId) {
+    console.log("Fetching suppression list from DB:", historyDbId, "table:", historyTableId);
+    try {
+      const suppTables = await getTables(historyDbId);
+      const suppTable = suppTables.find((t) => t.id === historyTableId);
+      if (suppTable) {
+        const suppFields = await getFields(historyTableId);
+        const refField = suppFields.find((f: any) =>
+          f.semantic_type !== "type/PK" && (
+            f.name.toLowerCase().includes("ref") ||
+            f.name.toLowerCase().includes("email") ||
+            f.name.toLowerCase().includes("mail") ||
+            f.name.toLowerCase().includes("customer")
+          )
+        ) || suppFields.find((f: any) =>
+          f.semantic_type !== "type/PK" &&
+          f.base_type === "type/Text"
+        );
+        const dateField = suppFields.find((f: any) =>
+          f.base_type === "type/DateTime" || f.base_type === "type/Date"
+        );
+
+        if (refField) {
+          suppressionRefFieldName = refField.name;
+          let suppSql: string;
+          if (dateField) {
+            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+          } else {
+            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}]`;
+          }
+
+          console.log("Suppression SQL:", suppSql);
+          const suppResult = await runNativeQuery(historyDbId, suppSql);
+          suppressedIds = new Set(
+            suppResult.rows.map((r) => String(r[0]).toLowerCase().trim()),
+          );
+          console.log(`Loaded ${suppressedIds.size} suppressed IDs (field: ${refField.name}) into memory.`);
+        } else {
+          console.warn("No suitable reference field found in suppression table");
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load suppression list:", e);
+    }
+  }
+
+  // 2. BUILD THE MASTER QUERY
+  let whereClause = "1=1";
+  if (segments && segments.length > 0) {
+    const segmentConditions = segments
+      .map((seg) => {
+        const parts = seg.split(":");
+        if (parts.length === 2) {
+          const field = parts[0];
+          let val = parts[1];
+          let operator = "=";
+          if (val.startsWith(">=")) {
+            operator = ">=";
+            val = val.substring(2);
+          } else if (val.startsWith("<=")) {
+            operator = "<=";
+            val = val.substring(2);
+          } else if (val.startsWith(">")) {
+            operator = ">";
+            val = val.substring(1);
+          } else if (val.startsWith("<")) {
+            operator = "<";
+            val = val.substring(1);
+          } else if (val.startsWith("!=")) {
+            operator = "!=";
+            val = val.substring(2);
+          }
+
+          let sqlVal;
+          if (!isNaN(Number(val)) && val.trim() !== "") {
+            sqlVal = val;
+          } else if (val.toLowerCase() === "true") {
+            sqlVal = "1";
+          } else if (val.toLowerCase() === "false") {
+            sqlVal = "0";
+          } else {
+            sqlVal = `'${val.replace(/'/g, "''")}'`;
+          }
+          return `[${field}] ${operator} ${sqlVal}`;
+        }
+        return "";
+      })
+      .filter(Boolean);
+
+    if (segmentConditions.length > 0)
+      whereClause += ` AND (${segmentConditions.join(" OR ")})`;
+  }
+
+  // We fetch a bit extra to account for people who will be filtered out
+  const sql = `SELECT TOP ${contactCap * 3} * FROM [${masterTable.name}] WHERE ${whereClause};`;
+  console.log("Executing Master Query:", sql);
+  const result = await runNativeQuery(databaseId, sql);
+
+  // 3. APPLY IN-MEMORY FILTERING (Step 2 of App-Join)
+  const finalRows = [];
+  let excludedCount = 0;
+
+  // Find the best matching field in the master table for suppression join
+  // Try to match by: email, customer ref/id, or any field that could be the join key
+  const joinFieldIndices: number[] = [];
+  if (suppressedIds.size > 0) {
+    // Priority 1: email fields
+    const emailIdx = result.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase() === "email" ||
+        c.name.toLowerCase() === "email_address",
+    );
+    if (emailIdx !== -1) joinFieldIndices.push(emailIdx);
+
+    // Priority 2: customer ref/id fields (matching suppression ref field pattern)
+    const custRefIdx = result.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase().includes("cust") &&
+        (c.name.toLowerCase().includes("id") || c.name.toLowerCase().includes("no")),
+    );
+    if (custRefIdx !== -1 && !joinFieldIndices.includes(custRefIdx)) joinFieldIndices.push(custRefIdx);
+
+    // Priority 3: prospect/reference ID fields
+    const prospectIdx = result.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase().includes("prospect") ||
+        c.name.toLowerCase().includes("ref_id") ||
+        c.name.toLowerCase().includes("reference"),
+    );
+    if (prospectIdx !== -1 && !joinFieldIndices.includes(prospectIdx)) joinFieldIndices.push(prospectIdx);
+
+    console.log("Suppression join fields:", joinFieldIndices.map(i => result.cols[i].name));
+  }
+
+  for (const row of result.rows) {
+    if (joinFieldIndices.length > 0) {
+      let isSuppressed = false;
+      for (const idx of joinFieldIndices) {
+        const val = String(row[idx]).toLowerCase().trim();
+        if (val && val !== "null" && val !== "" && suppressedIds.has(val)) {
+          isSuppressed = true;
+          break;
+        }
+      }
+      if (isSuppressed) {
+        excludedCount++;
+        continue;
+      }
+    }
+    finalRows.push(row);
+    if (finalRows.length >= contactCap) break;
+  }
+
+  const sample = finalRows.slice(0, 50).map((row) => {
+    const obj: any = {};
+    result.cols.forEach((col: any, i: number) => {
+      obj[col.name.toLowerCase()] = row[i];
+    });
+    return {
+      name: obj.name || obj.full_name || "Unknown",
+      email: obj.email || obj.mail || obj.email_address || "N/A",
+      city: obj.city || "",
+      state: obj.state || "",
+    };
+  });
+
+  return {
+    count: finalRows.length,
+    sample: sample,
+    excludedCount: excludedCount,
+    totalCandidates: result.rowCount,
+    historyTableUsed: !!historyDbId,
+  };
+}
+
+export async function runMarketingExportAndLogV2(
+  databaseId: number,
+  masterTableId: number,
+  historyDbId: number | null,
+  historyTableId: number | null,
+  segments: string[],
+  contactCap: number,
+  excludeDays: number,
+  campaignCode: string,
+): Promise<string> {
+  // 1. Fetch exactly like preview
+  const previewData = await getMarketingPreviewV2(
+    databaseId,
+    masterTableId,
+    historyDbId,
+    historyTableId,
+    segments,
+    contactCap,
+    excludeDays,
+  );
+
+  const masterTables = await getTables(databaseId);
+  const masterTable = masterTables.find((t) => t.id === masterTableId);
+  if (!masterTable) throw new Error("Master table not found");
+
+  // For the actual export, we need all the columns again
+  let whereClause = "1=1";
+  if (segments && segments.length > 0) {
+    const segmentConditions = segments
+      .map((seg) => {
+        const parts = seg.split(":");
+        if (parts.length === 2) {
+          const field = parts[0];
+          let val = parts[1];
+          let operator = "=";
+          if (val.startsWith(">=")) {
+            operator = ">=";
+            val = val.substring(2);
+          } else if (val.startsWith("<=")) {
+            operator = "<=";
+            val = val.substring(2);
+          } else if (val.startsWith(">")) {
+            operator = ">";
+            val = val.substring(1);
+          } else if (val.startsWith("<")) {
+            operator = "<";
+            val = val.substring(1);
+          } else if (val.startsWith("!=")) {
+            operator = "!=";
+            val = val.substring(2);
+          }
+
+          let sqlVal;
+          if (!isNaN(Number(val)) && val.trim() !== "") {
+            sqlVal = val;
+          } else if (val.toLowerCase() === "true") {
+            sqlVal = "1";
+          } else if (val.toLowerCase() === "false") {
+            sqlVal = "0";
+          } else {
+            sqlVal = `'${val.replace(/'/g, "''")}'`;
+          }
+          return `[${field}] ${operator} ${sqlVal}`;
+        }
+        return "";
+      })
+      .filter(Boolean);
+    if (segmentConditions.length > 0)
+      whereClause += ` AND (${segmentConditions.join(" OR ")})`;
+  }
+
+  const sql = `SELECT TOP ${contactCap * 3} * FROM [${masterTable.name}] WHERE ${whereClause};`;
+  const exportData = await runNativeQuery(databaseId, sql);
+
+  // Apply the same suppression logic
+  let suppressedIds = new Set<string>();
+  if (historyDbId && historyTableId) {
+    try {
+      const suppTables = await getTables(historyDbId);
+      const suppTable = suppTables.find((t) => t.id === historyTableId);
+      if (suppTable) {
+        const suppFields = await getFields(historyTableId);
+        const refField = suppFields.find((f: any) =>
+          f.semantic_type !== "type/PK" && (
+            f.name.toLowerCase().includes("ref") ||
+            f.name.toLowerCase().includes("email") ||
+            f.name.toLowerCase().includes("mail") ||
+            f.name.toLowerCase().includes("customer")
+          )
+        ) || suppFields.find((f: any) =>
+          f.semantic_type !== "type/PK" &&
+          f.base_type === "type/Text"
+        );
+        const dateField = suppFields.find((f: any) =>
+          f.base_type === "type/DateTime" || f.base_type === "type/Date"
+        );
+
+        if (refField) {
+          let suppSql: string;
+          if (dateField) {
+            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+          } else {
+            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}]`;
+          }
+
+          const suppResult = await runNativeQuery(historyDbId, suppSql);
+          suppressedIds = new Set(
+            suppResult.rows.map((r) => String(r[0]).toLowerCase().trim()),
+          );
+          console.log(`Export: Loaded ${suppressedIds.size} suppressed IDs (field: ${refField.name})`);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load suppression list for export:", e);
+    }
+  }
+
+  const finalRows = [];
+
+  // Find join fields for suppression matching
+  const exportJoinFieldIndices: number[] = [];
+  if (suppressedIds.size > 0) {
+    const emailIdx = exportData.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase() === "email" ||
+        c.name.toLowerCase() === "email_address",
+    );
+    if (emailIdx !== -1) exportJoinFieldIndices.push(emailIdx);
+
+    const custRefIdx = exportData.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase().includes("cust") &&
+        (c.name.toLowerCase().includes("id") || c.name.toLowerCase().includes("no")),
+    );
+    if (custRefIdx !== -1 && !exportJoinFieldIndices.includes(custRefIdx)) exportJoinFieldIndices.push(custRefIdx);
+
+    const prospectIdx = exportData.cols.findIndex(
+      (c: any) =>
+        c.name.toLowerCase().includes("prospect") ||
+        c.name.toLowerCase().includes("ref_id") ||
+        c.name.toLowerCase().includes("reference"),
+    );
+    if (prospectIdx !== -1 && !exportJoinFieldIndices.includes(prospectIdx)) exportJoinFieldIndices.push(prospectIdx);
+  }
+
+  for (const row of exportData.rows) {
+    if (exportJoinFieldIndices.length > 0) {
+      let isSuppressed = false;
+      for (const idx of exportJoinFieldIndices) {
+        const val = String(row[idx]).toLowerCase().trim();
+        if (val && val !== "null" && val !== "" && suppressedIds.has(val)) {
+          isSuppressed = true;
+          break;
+        }
+      }
+      if (isSuppressed) continue;
+    }
+    finalRows.push(row);
+    if (finalRows.length >= contactCap) break;
+  }
+
+  const emailIndex = exportData.cols.findIndex(
+    (c: any) =>
+      c.name.toLowerCase() === "email" ||
+      c.name.toLowerCase() === "email_address" ||
+      c.name.toLowerCase().includes("mail"),
+  );
+
+  // 2. Write-Back to the specific Suppression Database!
+  if (historyDbId && historyTableId && finalRows.length > 0 && emailIndex !== -1) {
+    try {
+      const suppTables = await getTables(historyDbId);
+      const suppTable = suppTables.find((t) => t.id === historyTableId);
+      if (suppTable) {
+        const suppFields = await getFields(historyTableId);
+        const refField = suppFields.find((f: any) =>
+          f.name.toLowerCase().includes("reference") ||
+          f.name.toLowerCase().includes("email") ||
+          f.name.toLowerCase().includes("mail")
+        );
+        const dateField = suppFields.find((f: any) =>
+          f.name.toLowerCase().includes("export_date") ||
+          f.name.toLowerCase().includes("date") ||
+          f.name.toLowerCase().includes("sent")
+        );
+        const codeField = suppFields.find((f: any) =>
+          f.name.toLowerCase().includes("campaign") ||
+          f.name.toLowerCase().includes("code")
+        );
+
+        if (refField && dateField) {
+          const emailsToLog = finalRows
+            .map((row) => row[emailIndex])
+            .filter((email) => email && email !== "null" && email.trim() !== "");
+
+          if (emailsToLog.length > 0) {
+            const columns = codeField
+              ? `[${refField.name}], [${codeField.name}], [${dateField.name}]`
+              : `[${refField.name}], [${dateField.name}]`;
+            const values = emailsToLog
+              .map((email) =>
+                codeField
+                  ? `('${email.replace(/'/g, "''")}', '${campaignCode}', CAST(GETDATE() AS DATE))`
+                  : `('${email.replace(/'/g, "''")}', CAST(GETDATE() AS DATE))`
+              )
+              .join(",");
+            const insertSql = `INSERT INTO [${suppTable.name}] (${columns}) VALUES ${values};`;
+            try {
+              await runNativeQuery(historyDbId, insertSql);
+              console.log(`Logged ${emailsToLog.length} emails to suppression list.`);
+            } catch (e) {
+              console.error("Failed to log to suppression list:", e);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to write-back to suppression list:", e);
+    }
+  }
+
+  const headers = exportData.cols.map((c: any) => c.name).join(",");
+  const rows = finalRows
+    .map((row) =>
+      row.map((val: any) => `"${String(val).replace(/"/g, '""')}"`).join(","),
+    )
+    .join("\n");
+
+  return `${headers}\n${rows}`;
 }

@@ -10,6 +10,8 @@ import {
   getAggregatedData,
   getTotalCount,
   runRawQuery,
+  getMarketingPreviewV2,
+  runMarketingExportAndLogV2,
 } from "./metabase";
 import {
   countQuerySchema,
@@ -138,12 +140,10 @@ export async function registerRoutes(
     try {
       const parsed = countQuerySchema.safeParse(req.body);
       if (!parsed.success) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid request body",
-            details: parsed.error.errors,
-          });
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: parsed.error.errors,
+        });
       }
 
       // Read limit from body (added manual check since it might not be in schema strict definition yet)
@@ -154,11 +154,9 @@ export async function registerRoutes(
       res.json(result);
     } catch (error) {
       console.error("Error getting count:", error);
-      res
-        .status(500)
-        .json({
-          error: error instanceof Error ? error.message : "Failed to get count",
-        });
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to get count",
+      });
     }
   });
 
@@ -166,12 +164,10 @@ export async function registerRoutes(
     try {
       const parsed = fieldOptionsQuerySchema.safeParse(req.body);
       if (!parsed.success) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid request body",
-            details: parsed.error.errors,
-          });
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: parsed.error.errors,
+        });
       }
 
       const limit = req.body.limit || 100000;
@@ -186,14 +182,12 @@ export async function registerRoutes(
       res.json({ fieldId, options });
     } catch (error) {
       console.error("Error getting field options:", error);
-      res
-        .status(500)
-        .json({
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to get field options",
-        });
+      res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to get field options",
+      });
     }
   });
 
@@ -201,12 +195,10 @@ export async function registerRoutes(
     try {
       const parsed = exportQuerySchema.safeParse(req.body);
       if (!parsed.success) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid request body",
-            details: parsed.error.errors,
-          });
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: parsed.error.errors,
+        });
       }
 
       const scanLimit = req.body.scanLimit || 100000;
@@ -223,19 +215,127 @@ export async function registerRoutes(
       res.json(result);
     } catch (error) {
       console.error("Error exporting mailing list:", error);
-      res
-        .status(500)
-        .json({
-          error:
-            error instanceof Error
-              ? error.message
-              : "Failed to export mailing list",
-        });
+      res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to export mailing list",
+      });
     }
   });
 
   // ... (Rest of routes for AI analysis, etc. remain unchanged) ...
   // [Full file content for other endpoints is preserved in existing logic]
+
+  // --- NEW V2 ROUTES FOR TWO-TABLE ARCHITECTURE ---
+
+  app.post("/api/ai/analyze-concept-v2", async (req, res) => {
+    try {
+      const parsed = analyzeConceptSchemaV2.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "Invalid request body",
+          details: parsed.error.errors,
+        });
+      }
+
+      const { concept, masterTableId } = parsed.data;
+
+      // Fetch the fields from the Master Table (T1) so the AI knows what to target
+      const fields = await getFields(masterTableId);
+      const analysis = await analyzeMarketingConcept(concept, fields);
+
+      res.json(analysis);
+    } catch (error) {
+      console.error("Error analyzing concept v2:", error);
+      res.status(500).json({
+        error:
+          error instanceof Error ? error.message : "Failed to analyze concept",
+      });
+    }
+  });
+
+  app.post("/api/ai/preview-v2", async (req, res) => {
+    try {
+      // NOTE: Ensure your emailPreviewSchemaV2 in shared/schema.ts allows campaignCode
+      const {
+        databaseId,
+        masterTableId,
+        historyDbId,
+        historyTableId,
+        segments,
+        contactCap,
+        excludeDays,
+      } = req.body;
+
+      // We'll create this function in metabase.ts next
+      const result = await getMarketingPreviewV2(
+        databaseId,
+        masterTableId,
+        historyDbId || null,
+        historyTableId || null,
+        segments,
+        contactCap || 5000,
+        excludeDays || 7,
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error generating preview v2:", error);
+      res.status(500).json({
+        error:
+          error instanceof Error ? error.message : "Failed to generate preview",
+      });
+    }
+  });
+
+  app.post("/api/ai/export-v2", async (req, res) => {
+    try {
+      const {
+        databaseId,
+        masterTableId,
+        historyDbId,
+        historyTableId,
+        segments,
+        contactCap,
+        excludeDays,
+        campaignCode,
+      } = req.body;
+
+      if (!campaignCode && historyTableId) {
+        return res.status(400).json({
+          error: "Campaign code is required when using a suppression list.",
+        });
+      }
+
+      const sanitizedCampaignCode = campaignCode
+        ? String(campaignCode).replace(/[^a-zA-Z0-9_\-]/g, "").substring(0, 50)
+        : "";
+
+      const csvString = await runMarketingExportAndLogV2(
+        databaseId,
+        masterTableId,
+        historyDbId || null,
+        historyTableId || null,
+        segments,
+        contactCap || 5000,
+        excludeDays || 7,
+        sanitizedCampaignCode,
+      );
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="campaign-${campaignCode || "export"}.csv"`,
+      );
+      res.send(csvString);
+    } catch (error) {
+      console.error("Error exporting v2:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to export list",
+      });
+    }
+  });
 
   // Email Marketing Tool - AI Routes
   app.post("/api/ai/analyze-concept", async (req, res) => {

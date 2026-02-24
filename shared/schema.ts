@@ -210,12 +210,13 @@ export const emailPreviewSchema = z.object({
 export type AnalyzeConceptRequest = z.infer<typeof analyzeConceptSchema>;
 export type EmailPreviewRequest = z.infer<typeof emailPreviewSchema>;
 
-// Email Marketing V2 Schemas (Two-Table Architecture)
+// Add the Campaign Code to the V2 schemas
 export const analyzeConceptSchemaV2 = z.object({
   concept: z.string().min(1, "Campaign concept is required"),
   databaseId: z.number(),
-  masterTableId: z.number(), // T1: Master Email List (required)
-  historyTableId: z.number().nullable().optional(), // T2: History/Behavior Log (optional)
+  masterTableId: z.number(), // T1
+  historyTableId: z.number().nullable().optional(), // T2 (Suppression)
+  campaignCode: z.string().optional(), // NEW: e.g., "L003"
   birthdayFilter: z.string().optional(),
   excludeDays: z.number().min(0).default(7),
   contactCap: z.number().min(1).default(5000),
@@ -243,3 +244,13 @@ export const trendsICPAnalysisSchema = z.object({
 });
 
 export type TrendsICPAnalysisRequest = z.infer<typeof trendsICPAnalysisSchema>;
+
+// Create a new schema specifically for the final export & write-back
+export const exportMarketingSchema = z.object({
+  databaseId: z.number(),
+  masterTableId: z.number(),
+  historyTableId: z.number(), // Required for write-back
+  campaignCode: z.string().min(1, "Campaign code is required for logging"), // e.g., "L003"
+  segments: z.array(z.string()),
+  contactCap: z.number().default(5000),
+});
