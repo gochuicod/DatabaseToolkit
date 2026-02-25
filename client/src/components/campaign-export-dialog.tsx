@@ -1,4 +1,4 @@
-import { Download, Copy, Check, Mail } from "lucide-react";
+import { Download, Copy, Check, Mail, Loader2, ShieldCheck, Columns3 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import {
   Dialog,
@@ -9,39 +9,33 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import type { MailingListEntry } from "@shared/schema";
 
-interface ExportDialogProps {
+interface CampaignExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  entries: MailingListEntry[];
-  total: number;
+  columns: string[];
+  records: Record<string, any>[];
+  totalCount: number;
+  excludedCount: number;
+  campaignCode: string;
+  onExportAndSuppress: () => void;
+  isExporting: boolean;
 }
 
-const COLUMNS = ["Name", "Email", "Address", "City", "State", "Zipcode", "Country"] as const;
-
-function getEntryValue(entry: MailingListEntry, col: typeof COLUMNS[number]): string {
-  switch (col) {
-    case "Name": return entry.name || "";
-    case "Email": return entry.email || "";
-    case "Address": return entry.address || "";
-    case "City": return entry.city || "";
-    case "State": return entry.state || "";
-    case "Zipcode": return entry.zipcode || "";
-    case "Country": return entry.country || "";
-    default: return "";
-  }
-}
-
-export function ExportDialog({
+export function CampaignExportDialog({
   open,
   onOpenChange,
-  entries,
-  total,
-}: ExportDialogProps) {
+  columns,
+  records,
+  totalCount,
+  excludedCount,
+  campaignCode,
+  onExportAndSuppress,
+  isExporting,
+}: CampaignExportDialogProps) {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollInfo, setScrollInfo] = useState({ left: 0, atEnd: false });
+  const [scrollInfo, setScrollInfo] = useState({ left: 0, top: 0, atEnd: false, atBottom: false });
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -49,18 +43,20 @@ export function ExportDialog({
     const handler = () => {
       setScrollInfo({
         left: el.scrollLeft,
+        top: el.scrollTop,
         atEnd: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2,
+        atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
       });
     };
     el.addEventListener("scroll", handler, { passive: true });
     handler();
     return () => el.removeEventListener("scroll", handler);
-  }, [open, entries]);
+  }, [open, records]);
 
   const handleCopyToClipboard = async () => {
-    const header = COLUMNS.join("\t");
-    const rows = entries.map((e) =>
-      COLUMNS.map((col) => getEntryValue(e, col)).join("\t"),
+    const header = columns.join("\t");
+    const rows = records.map((r) =>
+      columns.map((col) => String(r[col] ?? "")).join("\t"),
     );
     const text = [header, ...rows].join("\n");
     await navigator.clipboard.writeText(text);
@@ -68,26 +64,11 @@ export function ExportDialog({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDownloadCSV = () => {
-    const rows = entries.map((e) =>
-      COLUMNS.map((col) => getEntryValue(e, col)),
-    );
-    const csvContent = [
-      COLUMNS.join(","),
-      ...rows.map((row) =>
-        row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","),
-      ),
-    ].join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `mailing-list-${new Date().toISOString().split("T")[0]}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+  const formatCell = (val: any): string => {
+    if (val == null) return "";
+    const s = String(val);
+    if (s.toLowerCase() === "null") return "";
+    return s;
   };
 
   return (
@@ -97,16 +78,25 @@ export function ExportDialog({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
               <Mail className="h-5 w-5 text-primary" />
-              Mailing List Generated
+              Campaign Export Preview
+              {campaignCode && (
+                <Badge variant="outline" className="font-mono text-xs ml-1">
+                  {campaignCode}
+                </Badge>
+              )}
             </DialogTitle>
             <DialogDescription asChild>
-              <div className="flex items-center gap-2 pt-1">
-                <span>
-                  Successfully exported {total.toLocaleString()} contact{total !== 1 ? "s" : ""}
+              <div className="flex items-center gap-3 flex-wrap text-sm pt-1">
+                <span className="font-medium text-foreground">
+                  {totalCount.toLocaleString()} contact{totalCount !== 1 ? "s" : ""}
                 </span>
-                {entries.length < total && (
-                  <Badge variant="secondary" className="text-xs">
-                    Showing first {entries.length.toLocaleString()}
+                <span className="text-muted-foreground flex items-center gap-1">
+                  <Columns3 className="h-3.5 w-3.5" />
+                  {columns.length} columns
+                </span>
+                {excludedCount > 0 && (
+                  <Badge variant="destructive" className="text-xs">
+                    {excludedCount.toLocaleString()} suppressed
                   </Badge>
                 )}
               </div>
@@ -115,7 +105,7 @@ export function ExportDialog({
         </div>
 
         <div className="flex-1 min-h-0 relative">
-          {!scrollInfo.atEnd && scrollInfo.left < 20 && (
+          {!scrollInfo.atEnd && scrollInfo.left < 20 && columns.length > 8 && (
             <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-black/10 to-transparent z-20 pointer-events-none" />
           )}
           {scrollInfo.left > 20 && (
@@ -133,7 +123,7 @@ export function ExportDialog({
                   <th className="sticky top-0 left-0 z-30 bg-muted border-b border-r px-3 py-2.5 text-xs font-bold text-muted-foreground text-center w-[52px] min-w-[52px]">
                     #
                   </th>
-                  {COLUMNS.map((col) => (
+                  {columns.map((col, i) => (
                     <th
                       key={col}
                       className="sticky top-0 z-20 bg-muted border-b px-3 py-2.5 text-left text-xs font-bold text-foreground whitespace-nowrap select-none"
@@ -144,22 +134,22 @@ export function ExportDialog({
                 </tr>
               </thead>
               <tbody>
-                {entries.map((entry, rowIdx) => (
+                {records.map((record, rowIdx) => (
                   <tr
                     key={rowIdx}
-                    data-testid={`row-entry-${rowIdx}`}
+                    data-testid={`row-campaign-entry-${rowIdx}`}
                     className={`${rowIdx % 2 === 0 ? "bg-background" : "bg-muted/30"} hover:bg-primary/5 transition-colors`}
                   >
                     <td className="sticky left-0 z-10 bg-inherit border-r px-3 py-2 text-xs text-muted-foreground text-center font-mono tabular-nums">
                       {rowIdx + 1}
                     </td>
-                    {COLUMNS.map((col) => {
-                      const val = getEntryValue(entry, col);
+                    {columns.map((col) => {
+                      const val = formatCell(record[col]);
                       return (
                         <td
                           key={col}
-                          className={`px-3 py-2 whitespace-nowrap ${col === "Address" ? "max-w-[300px] truncate" : ""} ${col === "Name" ? "font-medium" : ""}`}
-                          title={col === "Address" ? val : undefined}
+                          className="px-3 py-2 whitespace-nowrap max-w-[280px] truncate"
+                          title={val}
                         >
                           {val || <span className="text-muted-foreground/40">-</span>}
                         </td>
@@ -178,7 +168,7 @@ export function ExportDialog({
               variant="outline"
               onClick={handleCopyToClipboard}
               className="flex-1"
-              data-testid="button-copy-to-clipboard"
+              data-testid="button-copy-campaign-clipboard"
             >
               {copied ? (
                 <>
@@ -193,12 +183,22 @@ export function ExportDialog({
               )}
             </Button>
             <Button
-              onClick={handleDownloadCSV}
+              onClick={onExportAndSuppress}
+              disabled={isExporting || !campaignCode.trim()}
               className="flex-1"
-              data-testid="button-download-csv"
+              data-testid="button-export-and-suppress"
             >
-              <Download className="h-4 w-4 mr-2" />
-              Download CSV
+              {isExporting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting & Logging...
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="h-4 w-4 mr-2" />
+                  Download CSV & Log to Suppression
+                </>
+              )}
             </Button>
           </div>
         </div>

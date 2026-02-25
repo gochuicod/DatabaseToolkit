@@ -12,6 +12,7 @@ import {
   runRawQuery,
   getMarketingPreviewV2,
   runMarketingExportAndLogV2,
+  getTableRowCountsFast,
 } from "./metabase";
 import {
   countQuerySchema,
@@ -65,6 +66,35 @@ export async function registerRoutes(
       });
     }
   });
+
+  app.get(
+    "/api/metabase/databases/:databaseId/table-counts",
+    async (req, res) => {
+      try {
+        const databaseId = parseInt(req.params.databaseId, 10);
+        if (isNaN(databaseId)) {
+          return res.status(400).json({ error: "Invalid database ID" });
+        }
+        const tables = await getTables(databaseId);
+        const tableNames = tables.map((t) => t.name);
+        const fastCounts = await getTableRowCountsFast(databaseId, tableNames);
+
+        const result: Record<string, number> = {};
+        for (const table of tables) {
+          result[String(table.id)] = fastCounts[table.name] ?? table.row_count ?? 0;
+        }
+        res.json(result);
+      } catch (error) {
+        console.error("Error fetching table counts:", error);
+        res.status(500).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch table counts",
+        });
+      }
+    },
+  );
 
   app.get(
     "/api/metabase/databases/:databaseId/tables/:tableId/rows",

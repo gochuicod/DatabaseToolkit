@@ -73,6 +73,11 @@ export default function BrainworksFiltering() {
   const { toast } = useToast();
 
   const [scanIncrement, setScanIncrement] = useState<number | "all">(100000);
+
+  // NEW: State for handling custom limits
+  const [isCustomLimit, setIsCustomLimit] = useState(false);
+  const [customLimitValue, setCustomLimitValue] = useState("");
+
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
     null,
   );
@@ -90,11 +95,6 @@ export default function BrainworksFiltering() {
   );
   const [exportedTotal, setExportedTotal] = useState(0);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
-
-  // Store the true, absolute totals for each table to fix the dropdown UI
-  const [absoluteCounts, setAbsoluteCounts] = useState<Record<number, number>>(
-    {},
-  );
 
   const debouncedFilters = useDebounce(filters, 300);
 
@@ -128,63 +128,20 @@ export default function BrainworksFiltering() {
     enabled: !!selectedDatabaseId,
   });
 
-  // FIXED: Sequential Background Fetching to prevent Browser Network Throttling
-  useEffect(() => {
-    if (!selectedDatabaseId || tables.length === 0) return;
+  const { data: fastCounts = {} } = useQuery<Record<string, number>>({
+    queryKey: ["/api/metabase/databases", selectedDatabaseId, "table-counts"],
+    enabled: !!selectedDatabaseId,
+  });
 
-    let isMounted = true;
-
-    async function fetchBackgroundCountsSequentially() {
-      // Prioritize the currently selected table so the UI updates instantly
-      const prioritizedTables = [...tables].sort((a, b) => {
-        if (a.id === selectedTableId) return -1;
-        if (b.id === selectedTableId) return 1;
-        return 0;
-      });
-
-      for (const table of prioritizedTables) {
-        if (!isMounted) break; // Stop if component unmounts
-
-        // Skip if we already successfully fetched this table's count
-        if (absoluteCounts[table.id] !== undefined) continue;
-
-        try {
-          const res = await apiRequest("POST", "/api/metabase/count", {
-            databaseId: selectedDatabaseId,
-            tableId: table.id,
-            filters: [],
-            limit: MAX_FETCH_LIMIT,
-          });
-          const data = await res.json();
-
-          if (isMounted) {
-            setAbsoluteCounts((prev) => ({ ...prev, [table.id]: data.total }));
-          }
-        } catch (err) {
-          console.error(
-            `Failed to fetch absolute count for table ${table.id}`,
-            err,
-          );
-        }
-      }
-    }
-
-    fetchBackgroundCountsSequentially();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedDatabaseId, tables, selectedTableId]);
-
-  // Patch the tables array with the true absolute counts so the dropdown is correct
   const displayTables = useMemo(() => {
     return tables.map((table) => {
-      if (absoluteCounts[table.id] !== undefined) {
-        return { ...table, row_count: absoluteCounts[table.id] };
+      const fastCount = fastCounts[String(table.id)];
+      if (fastCount !== undefined) {
+        return { ...table, row_count: fastCount };
       }
       return table;
     });
-  }, [tables, absoluteCounts]);
+  }, [tables, fastCounts]);
 
   useEffect(() => {
     if (tables.length > 0 && !selectedTableId) {
@@ -295,6 +252,7 @@ export default function BrainworksFiltering() {
       setFieldOptions({});
       setExportedEntries([]);
       setScanIncrement(100000);
+      setIsCustomLimit(false);
     }
   }, [selectedTableId]);
 
@@ -395,16 +353,12 @@ export default function BrainworksFiltering() {
   const handleScanNext = useCallback(() => {
     if (scanIncrement === "all") return;
 
+    // Find the next tier in the array, or just add 100k safely if they used a custom amount
     const currentIndex = LIMIT_OPTIONS.indexOf(scanIncrement);
     const nextLimit =
       currentIndex !== -1 && currentIndex < LIMIT_OPTIONS.length - 1
         ? LIMIT_OPTIONS[currentIndex + 1]
         : scanIncrement + 100000;
-
-    if (!LIMIT_OPTIONS.includes(nextLimit)) {
-      LIMIT_OPTIONS.push(nextLimit);
-      LIMIT_OPTIONS.sort((a, b) => a - b);
-    }
 
     setScanIncrement(nextLimit);
   }, [scanIncrement]);
@@ -630,6 +584,7 @@ export default function BrainworksFiltering() {
             }
           />
 
+          {/* METABASE-STYLE ROW LIMIT & SCAN CONTROL */}
           {selectedTableId && (
             <Card className="shadow-sm border-dashed bg-muted/20">
               <CardContent className="p-4 flex flex-col gap-4">
@@ -639,25 +594,97 @@ export default function BrainworksFiltering() {
                     <span>Scan Limit</span>
                   </div>
 
+                  {/* NEW: Custom Limit Input vs Dropdown Toggle */}
                   <div className="flex items-center gap-2">
-                    <Select
-                      value={scanIncrement.toString()}
-                      onValueChange={(val) =>
-                        setScanIncrement(val === "all" ? "all" : Number(val))
-                      }
-                    >
-                      <SelectTrigger className="h-8 w-[130px] bg-background">
-                        <SelectValue placeholder="Amount" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {LIMIT_OPTIONS.map((opt) => (
-                          <SelectItem key={opt} value={opt.toString()}>
-                            {opt.toLocaleString()} rows
+                    {isCustomLimit ? (
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          min="1"
+                          value={customLimitValue}
+                          onChange={(e) => setCustomLimitValue(e.target.value)}
+                          className="h-8 w-[100px] bg-background"
+                          placeholder="e.g. 25000"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              const val = parseInt(customLimitValue, 10);
+                              if (!isNaN(val) && val > 0) {
+                                setScanIncrement(val);
+                                setIsCustomLimit(false);
+                              }
+                            }
+                          }}
+                        />
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-100 dark:hover:bg-green-900"
+                          onClick={() => {
+                            const val = parseInt(customLimitValue, 10);
+                            if (!isNaN(val) && val > 0) {
+                              setScanIncrement(val);
+                              setIsCustomLimit(false);
+                            }
+                          }}
+                        >
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 text-muted-foreground"
+                          onClick={() => setIsCustomLimit(false)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Select
+                        value={scanIncrement.toString()}
+                        onValueChange={(val) => {
+                          if (val === "custom") {
+                            setIsCustomLimit(true);
+                            setCustomLimitValue(
+                              scanIncrement === "all"
+                                ? ""
+                                : scanIncrement.toString(),
+                            );
+                          } else {
+                            setScanIncrement(
+                              val === "all" ? "all" : Number(val),
+                            );
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="h-8 w-[130px] bg-background">
+                          <SelectValue placeholder="Amount" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {LIMIT_OPTIONS.map((opt) => (
+                            <SelectItem key={opt} value={opt.toString()}>
+                              {opt.toLocaleString()} rows
+                            </SelectItem>
+                          ))}
+
+                          {/* Display the active custom limit in the list if it's not a standard preset */}
+                          {!LIMIT_OPTIONS.includes(scanIncrement as number) &&
+                            scanIncrement !== "all" && (
+                              <SelectItem value={scanIncrement.toString()}>
+                                {scanIncrement.toLocaleString()} rows
+                              </SelectItem>
+                            )}
+
+                          <SelectItem value="all">All Rows</SelectItem>
+                          <SelectItem
+                            value="custom"
+                            className="text-primary font-medium"
+                          >
+                            Custom amount...
                           </SelectItem>
-                        ))}
-                        <SelectItem value="all">All Rows</SelectItem>
-                      </SelectContent>
-                    </Select>
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                 </div>
 

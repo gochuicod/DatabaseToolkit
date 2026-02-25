@@ -52,7 +52,8 @@ This application provides 4 marketing tools:
   - **AI Analysis Phase**: AI analyzes T1 schema → suggests segments in "field_name:value" format
   - **Query Orchestration**: System builds filters from AI suggestions + applies T2 exclusions
   - **Data Processing**: Shows total candidates, excluded count, and final count with ranking
-  - **Preview & Export**: Real data preview with engagement scores, CSV export
+  - **Preview & Export**: Modal-based full record preview (all database columns) before CSV download + automatic suppression logging
+- `client/src/components/campaign-export-dialog.tsx` - Full-screen modal for reviewing all records before export, with Copy to Clipboard and Download CSV + Log to Suppression actions
 - `server/openai.ts` - OpenAI integration for concept analysis (schema analysis, not data retrieval)
 - `server/routes.ts` - V2 endpoints: `/api/ai/analyze-concept-v2`, `/api/ai/preview-v2`, `/api/ai/export-v2`
 

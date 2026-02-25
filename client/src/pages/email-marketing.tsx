@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   AlertCircle,
   CheckCircle2,
+  Eye,
 } from "lucide-react";
 import {
   Card,
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { CampaignExportDialog } from "@/components/campaign-export-dialog";
 import type { MetabaseDatabase, MetabaseTable } from "@shared/schema";
 
 interface SegmentSuggestion {
@@ -80,6 +82,8 @@ interface PreviewResponse {
     state?: string;
     engagementScore?: number;
   }>;
+  columns: string[];
+  records: Record<string, any>[];
   excludedCount: number;
   totalCandidates: number;
   historyTableUsed: boolean;
@@ -117,6 +121,7 @@ export default function EmailMarketing() {
   const [previewResult, setPreviewResult] = useState<PreviewResponse | null>(
     null,
   );
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
   // 1. Fetch all databases
   const { data: databases, isLoading: isLoadingDatabases } = useQuery<
@@ -253,6 +258,7 @@ export default function EmailMarketing() {
       a.download = `${campaignCode || "campaign"}-${new Date().toISOString().split("T")[0]}.csv`;
       a.click();
       URL.revokeObjectURL(url);
+      setExportDialogOpen(false);
       toast({
         title: "Success",
         description: "Export complete and logged to suppression history.",
@@ -615,9 +621,9 @@ export default function EmailMarketing() {
                     <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       Sample Records
                     </Label>
-                    <ScrollArea className="h-[200px] rounded-md border bg-muted/10">
+                    <ScrollArea className="h-[160px] rounded-md border bg-muted/10">
                       <div className="p-2 space-y-1">
-                        {previewResult.sample.map((contact, idx) => (
+                        {previewResult.sample.slice(0, 10).map((contact, idx) => (
                           <div
                             key={idx}
                             className="flex justify-between items-center p-2 rounded bg-background shadow-sm text-sm"
@@ -639,22 +645,14 @@ export default function EmailMarketing() {
                   {/* Action */}
                   <div className="space-y-2">
                     <Button
-                      onClick={() => exportMutation.mutate()}
-                      disabled={
-                        exportMutation.isPending || !campaignCode.trim()
-                      }
+                      onClick={() => setExportDialogOpen(true)}
+                      disabled={!previewResult.records || previewResult.records.length === 0}
+                      variant="outline"
                       className="w-full h-12 text-base"
+                      data-testid="button-preview-export"
                     >
-                      {exportMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-5 w-5 mr-2 animate-spin" />{" "}
-                          Exporting...
-                        </>
-                      ) : (
-                        <>
-                          <Download className="h-5 w-5 mr-2" /> Download CSV
-                        </>
-                      )}
+                      <Eye className="h-5 w-5 mr-2" />
+                      Preview All {previewResult.count.toLocaleString()} Records
                     </Button>
                     {!campaignCode.trim() && (
                       <p className="text-xs text-center text-rose-500 font-medium flex items-center justify-center gap-1">
@@ -669,6 +667,22 @@ export default function EmailMarketing() {
           </Card>
         </div>
       </div>
+
+      {previewResult && (
+        <CampaignExportDialog
+          open={exportDialogOpen}
+          onOpenChange={setExportDialogOpen}
+          columns={previewResult.columns || []}
+          records={previewResult.records || []}
+          totalCount={previewResult.count}
+          excludedCount={previewResult.excludedCount}
+          campaignCode={campaignCode}
+          onExportAndSuppress={() => {
+            exportMutation.mutate();
+          }}
+          isExporting={exportMutation.isPending}
+        />
+      )}
     </div>
   );
 }

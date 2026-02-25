@@ -25,18 +25,18 @@ const tools = [
     icon: Filter,
     description: "Filter and export contact lists",
   },
-  {
-    title: "BrainWorks Analysis",
-    url: "/brainworks-analysis",
-    icon: BarChart3,
-    description: "Multiple analysis models with visualizations",
-  },
-  {
-    title: "Trend & ICP Analysis",
-    url: "/trends-icp",
-    icon: TrendingUp,
-    description: "Trends and Ideal Customer Profile analysis",
-  },
+  // {
+  //   title: "BrainWorks Analysis",
+  //   url: "/brainworks-analysis",
+  //   icon: BarChart3,
+  //   description: "Multiple analysis models with visualizations",
+  // },
+  // {
+  //   title: "Trend & ICP Analysis",
+  //   url: "/trends-icp",
+  //   icon: TrendingUp,
+  //   description: "Trends and Ideal Customer Profile analysis",
+  // },
 ];
 
 export function AppSidebar() {

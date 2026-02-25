@@ -722,6 +722,31 @@ export async function runNativeQuery(
   };
 }
 
+export async function getTableRowCountsFast(
+  databaseId: number,
+  tableNames: string[],
+): Promise<Record<string, number>> {
+  const sql = `
+    SELECT t.name AS table_name, SUM(p.rows) AS row_count
+    FROM sys.tables t
+    JOIN sys.partitions p ON t.object_id = p.object_id
+    WHERE p.index_id IN (0, 1)
+    GROUP BY t.name
+  `;
+
+  try {
+    const result = await runNativeQuery(databaseId, sql);
+    const counts: Record<string, number> = {};
+    for (const row of result.rows) {
+      counts[String(row[0])] = Number(row[1]) || 0;
+    }
+    return counts;
+  } catch (err) {
+    console.error("Fast row count query failed, falling back to metadata:", err);
+    return {};
+  }
+}
+
 // --- MS SQL SERVER V2 FUNCTIONS (OPTIMIZED FOR MILLIONS OF ROWS) ---
 
 export async function getMarketingPreviewV2(
@@ -1001,9 +1026,20 @@ export async function getMarketingPreviewV2(
     };
   });
 
+  const columns = result.cols.map((c: any) => c.name);
+  const allRecords = finalRows.map((row) => {
+    const record: Record<string, any> = {};
+    columns.forEach((col: string, i: number) => {
+      record[col] = row[i];
+    });
+    return record;
+  });
+
   return {
     count: finalRows.length,
     sample: sample,
+    columns,
+    records: allRecords,
     excludedCount: excludedCount,
     totalCandidates: result.rowCount,
     historyTableUsed: !!historyDbId,
