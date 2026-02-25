@@ -11,18 +11,13 @@ import {
   ChevronDown,
   Loader2,
   ArrowDownCircle,
+  Database as DatabaseIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -69,13 +64,15 @@ import type {
   FilterOperator,
 } from "@shared/schema";
 
-// CONSTANT: Hard limit for fetches set to 1,000,000 as requested
-const FETCH_LIMIT = 100000;
+// CONSTANT: A very high limit to represent "Everything"
+const MAX_FETCH_LIMIT = 999999999;
+// Standard incremental steps for scanning rows
+const LIMIT_OPTIONS = [100000, 200000, 300000, 400000, 500000, 1000000];
 
 export default function BrainworksFiltering() {
   const { toast } = useToast();
 
-  const [scanLimit, setScanLimit] = useState<number>(FETCH_LIMIT);
+  const [scanIncrement, setScanIncrement] = useState<number | "all">(100000);
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
     null,
   );
@@ -94,8 +91,10 @@ export default function BrainworksFiltering() {
   const [exportedTotal, setExportedTotal] = useState(0);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
 
-  // State for "Load More" functionality
-  const [hasMoreData, setHasMoreData] = useState<boolean>(true);
+  // Store the true, absolute totals for each table to fix the dropdown UI
+  const [absoluteCounts, setAbsoluteCounts] = useState<Record<number, number>>(
+    {},
+  );
 
   const debouncedFilters = useDebounce(filters, 300);
 
@@ -129,6 +128,64 @@ export default function BrainworksFiltering() {
     enabled: !!selectedDatabaseId,
   });
 
+  // FIXED: Sequential Background Fetching to prevent Browser Network Throttling
+  useEffect(() => {
+    if (!selectedDatabaseId || tables.length === 0) return;
+
+    let isMounted = true;
+
+    async function fetchBackgroundCountsSequentially() {
+      // Prioritize the currently selected table so the UI updates instantly
+      const prioritizedTables = [...tables].sort((a, b) => {
+        if (a.id === selectedTableId) return -1;
+        if (b.id === selectedTableId) return 1;
+        return 0;
+      });
+
+      for (const table of prioritizedTables) {
+        if (!isMounted) break; // Stop if component unmounts
+
+        // Skip if we already successfully fetched this table's count
+        if (absoluteCounts[table.id] !== undefined) continue;
+
+        try {
+          const res = await apiRequest("POST", "/api/metabase/count", {
+            databaseId: selectedDatabaseId,
+            tableId: table.id,
+            filters: [],
+            limit: MAX_FETCH_LIMIT,
+          });
+          const data = await res.json();
+
+          if (isMounted) {
+            setAbsoluteCounts((prev) => ({ ...prev, [table.id]: data.total }));
+          }
+        } catch (err) {
+          console.error(
+            `Failed to fetch absolute count for table ${table.id}`,
+            err,
+          );
+        }
+      }
+    }
+
+    fetchBackgroundCountsSequentially();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedDatabaseId, tables, selectedTableId]);
+
+  // Patch the tables array with the true absolute counts so the dropdown is correct
+  const displayTables = useMemo(() => {
+    return tables.map((table) => {
+      if (absoluteCounts[table.id] !== undefined) {
+        return { ...table, row_count: absoluteCounts[table.id] };
+      }
+      return table;
+    });
+  }, [tables, absoluteCounts]);
+
   useEffect(() => {
     if (tables.length > 0 && !selectedTableId) {
       setSelectedTableId(tables[0].id);
@@ -158,7 +215,7 @@ export default function BrainworksFiltering() {
         databaseId: selectedDatabaseId,
         tableId: selectedTableId,
         filters: Object.values(debouncedFilters),
-        limit: scanLimit,
+        limit: scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement, // Increments the panel
       });
       return response.json();
     },
@@ -172,11 +229,11 @@ export default function BrainworksFiltering() {
     },
   });
 
-  // Export mutation handles limit and offset
+  // Export mutation handles limit and offset correctly
   const exportMutation = useMutation<
     { entries: MailingListEntry[]; total: number },
     Error,
-    { isLoadMore?: boolean; overrideScanLimit?: number } // Add override type
+    { isLoadMore?: boolean; overrideScanLimit?: number }
   >({
     mutationFn: async ({ isLoadMore = false, overrideScanLimit }) => {
       if (!selectedDatabaseId || !selectedTableId) {
@@ -184,43 +241,36 @@ export default function BrainworksFiltering() {
       }
 
       const offsetToUse = isLoadMore ? exportedEntries.length : 0;
-      // Use override if provided (for immediate button click), otherwise state
-      const limitToUse = overrideScanLimit || scanLimit;
+      let limitToUse = overrideScanLimit;
+      if (!limitToUse) {
+        limitToUse = scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement;
+      }
 
       const response = await apiRequest("POST", "/api/metabase/export", {
         databaseId: selectedDatabaseId,
         tableId: selectedTableId,
         filters: Object.values(filters),
-        limit: FETCH_LIMIT,
+        limit: limitToUse,
         offset: offsetToUse,
-        scanLimit: limitToUse, // Pass scanLimit
+        scanLimit: limitToUse,
       });
       return response.json();
     },
     onSuccess: (data, variables) => {
       if (variables.isLoadMore) {
-        // Append new entries
         setExportedEntries((prev) => [...prev, ...data.entries]);
         toast({
-          title: "More rows loaded",
-          description: `Added ${data.entries.length.toLocaleString()} rows. Total: ${(exportedEntries.length + data.entries.length).toLocaleString()}`,
+          title: "More rows exported",
+          description: `Added ${data.entries.length.toLocaleString()} rows. Total ready: ${(exportedEntries.length + data.entries.length).toLocaleString()}`,
         });
       } else {
-        // Replace entries (New fetch)
         setExportedEntries(data.entries);
         setExportedTotal(data.total);
         setExportDialogOpen(true);
         toast({
-          title: "Data loaded",
-          description: `Loaded first ${data.entries.length.toLocaleString()} rows`,
+          title: "Data prepared",
+          description: `Loaded ${data.entries.length.toLocaleString()} rows for export`,
         });
-      }
-
-      // Check if we reached the end (if returned data is less than limit, no more data)
-      if (data.entries.length < FETCH_LIMIT) {
-        setHasMoreData(false);
-      } else {
-        setHasMoreData(true);
       }
     },
     onError: (error) => {
@@ -237,16 +287,14 @@ export default function BrainworksFiltering() {
     if (selectedDatabaseId && selectedTableId) {
       countMutation.mutate();
     }
-  }, [selectedDatabaseId, selectedTableId, debouncedFilters, scanLimit]);
+  }, [selectedDatabaseId, selectedTableId, debouncedFilters, scanIncrement]);
 
-  // Reset logic when table changes
   useEffect(() => {
     if (selectedTableId) {
       setFilters({});
       setFieldOptions({});
       setExportedEntries([]);
-      setHasMoreData(true);
-      setScanLimit(FETCH_LIMIT);
+      setScanIncrement(100000);
     }
   }, [selectedTableId]);
 
@@ -315,7 +363,7 @@ export default function BrainworksFiltering() {
             databaseId: selectedDatabaseId,
             tableId: selectedTableId,
             fieldId,
-            limit: scanLimit,
+            limit: scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement,
           },
         );
         const data = await response.json();
@@ -336,24 +384,30 @@ export default function BrainworksFiltering() {
       fieldOptions,
       loadingFieldOptions,
       toast,
+      scanIncrement,
     ],
   );
 
-  // Initial Fetch
   const handleExport = useCallback(() => {
-    setHasMoreData(true);
     exportMutation.mutate({ isLoadMore: false });
   }, [exportMutation]);
 
-  // Load More Button Handler
-  const handleLoadMore = useCallback(() => {
-    // Increment the limit by FETCH_LIMIT (100,000)
-    const newLimit = scanLimit + FETCH_LIMIT;
-    setScanLimit(newLimit);
+  const handleScanNext = useCallback(() => {
+    if (scanIncrement === "all") return;
 
-    // Trigger fetch with the new limit immediately
-    exportMutation.mutate({ isLoadMore: true, overrideScanLimit: newLimit });
-  }, [exportMutation, scanLimit]);
+    const currentIndex = LIMIT_OPTIONS.indexOf(scanIncrement);
+    const nextLimit =
+      currentIndex !== -1 && currentIndex < LIMIT_OPTIONS.length - 1
+        ? LIMIT_OPTIONS[currentIndex + 1]
+        : scanIncrement + 100000;
+
+    if (!LIMIT_OPTIONS.includes(nextLimit)) {
+      LIMIT_OPTIONS.push(nextLimit);
+      LIMIT_OPTIONS.sort((a, b) => a - b);
+    }
+
+    setScanIncrement(nextLimit);
+  }, [scanIncrement]);
 
   const handleRefreshCount = useCallback(() => {
     countMutation.mutate();
@@ -402,9 +456,9 @@ export default function BrainworksFiltering() {
       .filter(Boolean) as MetabaseField[];
   }, [filters, fields]);
 
-  const hitScanLimit = (countMutation.data?.total || 0) >= scanLimit;
-  const showLoadMore =
-    hitScanLimit || (hasMoreData && exportedEntries.length > 0);
+  const limitReached =
+    scanIncrement !== "all" &&
+    (countMutation.data?.total || 0) >= scanIncrement;
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -445,7 +499,7 @@ export default function BrainworksFiltering() {
 
       <DatabaseSelector
         databases={databases}
-        tables={tables}
+        tables={displayTables}
         selectedDatabaseId={selectedDatabaseId}
         selectedTableId={selectedTableId}
         isLoadingDatabases={isLoadingDatabases}
@@ -576,29 +630,59 @@ export default function BrainworksFiltering() {
             }
           />
 
-          {/* LOAD MORE BUTTON */}
-          {showLoadMore && (
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={handleLoadMore}
-              disabled={exportMutation.isPending}
-            >
-              {exportMutation.isPending &&
-              exportMutation.variables?.isLoadMore ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : (
-                <ArrowDownCircle className="h-4 w-4 mr-2" />
-              )}
-              {hitScanLimit
-                ? `Scan 100,000 More Rows`
-                : `Load More (+${FETCH_LIMIT.toLocaleString()})`}
-            </Button>
+          {selectedTableId && (
+            <Card className="shadow-sm border-dashed bg-muted/20">
+              <CardContent className="p-4 flex flex-col gap-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <DatabaseIcon className="h-4 w-4 shrink-0" />
+                    <span>Scan Limit</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={scanIncrement.toString()}
+                      onValueChange={(val) =>
+                        setScanIncrement(val === "all" ? "all" : Number(val))
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-[130px] bg-background">
+                        <SelectValue placeholder="Amount" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {LIMIT_OPTIONS.map((opt) => (
+                          <SelectItem key={opt} value={opt.toString()}>
+                            {opt.toLocaleString()} rows
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="all">All Rows</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {limitReached && (
+                  <Button
+                    variant="secondary"
+                    className="w-full bg-secondary/50 hover:bg-secondary"
+                    onClick={handleScanNext}
+                    disabled={countMutation.isPending}
+                  >
+                    {countMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    ) : (
+                      <ArrowDownCircle className="h-4 w-4 mr-2" />
+                    )}
+                    Scan next rows
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           {exportedEntries.length > 0 && (
             <div className="text-xs text-center text-muted-foreground">
-              Currently loaded: {exportedEntries.length.toLocaleString()} rows
+              Currently prepared: {exportedEntries.length.toLocaleString()} rows
             </div>
           )}
         </div>

@@ -14,6 +14,12 @@ function getMetabaseUrl(): string {
   return url.replace(/\/+$/, "");
 }
 
+// FIXED: Now safely keeps Japanese text while stripping only spaces, underscores, and hyphens
+function normalizeColName(name: string): string {
+  if (!name) return "";
+  return name.toLowerCase().replace(/[\s_\-]/g, "");
+}
+
 // Inside server/metabase.ts - Conceptual Query Builder
 export async function runMarketingExportAndLog(
   databaseId: number,
@@ -22,7 +28,6 @@ export async function runMarketingExportAndLog(
   campaignCode: string,
   limit: number,
 ) {
-  // 1. Generate the exclusionary SQL
   const sql = `
     SELECT t1.*
     FROM [Master Table] AS t1
@@ -36,10 +41,8 @@ export async function runMarketingExportAndLog(
     LIMIT ${limit};
   `;
 
-  // 2. Run the native query via Metabase API
   const exportData = await runNativeQuery(databaseId, sql);
 
-  // 3. The Write-Back (Log the export)
   if (exportData.rows.length > 0) {
     const values = exportData.rows
       .map((row) => `('${row.email}', '${campaignCode}', CURRENT_DATE)`)
@@ -49,7 +52,6 @@ export async function runMarketingExportAndLog(
       INSERT INTO [Tbl Global Campaign History] (Reference_ID, Campaign_Code, Export_Date)
       VALUES ${values};
     `;
-    // Execute write-back query quietly in the background
     await runNativeQuery(databaseId, insertSql);
   }
 
@@ -129,7 +131,6 @@ async function metabaseRequest(
   return response.json();
 }
 
-// Helpers for visual indicators (simulated data for UI badges)
 function getSimulatedDbSize(id: number): string {
   const sizes = ["1.2 GB", "450 MB", "12.5 GB", "8.9 GB", "2.1 GB"];
   return sizes[id % sizes.length];
@@ -217,16 +218,18 @@ export async function getCount(
   databaseId: number,
   tableId: number,
   filters: FilterValue[],
-  limit: number = 100000, // Default limit
+  limit: number = 100000,
 ): Promise<{ count: number; total: number; percentage: number }> {
+  const sourceQuery: any = { "source-table": tableId };
+  if (limit < 999999999) {
+    sourceQuery.limit = limit;
+  }
+
   const totalQuery = {
     database: databaseId,
     type: "query",
     query: {
-      "source-query": {
-        "source-table": tableId,
-        limit: limit, // Use dynamic limit
-      },
+      "source-query": sourceQuery,
       aggregation: [["count"]],
     },
   };
@@ -250,10 +253,7 @@ export async function getCount(
     database: databaseId,
     type: "query",
     query: {
-      "source-query": {
-        "source-table": tableId,
-        limit: limit, // Use dynamic limit
-      },
+      "source-query": sourceQuery,
       aggregation: [["count"]],
       filter: combinedFilter,
     },
@@ -274,16 +274,18 @@ export async function getFieldOptions(
   databaseId: number,
   tableId: number,
   fieldId: number,
-  limit: number = 100000, // Default limit
+  limit: number = 100000,
 ): Promise<FieldOption[]> {
+  const sourceQuery: any = { "source-table": tableId };
+  if (limit < 999999999) {
+    sourceQuery.limit = limit;
+  }
+
   const query = {
     database: databaseId,
     type: "query",
     query: {
-      "source-query": {
-        "source-table": tableId,
-        limit: limit, // Use dynamic limit
-      },
+      "source-query": sourceQuery,
       aggregation: [["count"]],
       breakout: [["field", fieldId, null]],
       "order-by": [["desc", ["aggregation", 0]]],
@@ -311,18 +313,21 @@ export async function getMailingList(
   filters: FilterValue[],
   limit: number = 1000,
   offset: number = 0,
-  scanLimit: number = 100000, // New parameter for the source scope
+  scanLimit: number = 100000,
 ): Promise<{ entries: MailingListEntry[]; total: number }> {
   const fields = await getFields(tableId);
 
-  // ... [Keep the existing field finding logic (nameFieldId, etc.)] ...
   const findField = (patterns: string[]): number | null => {
     for (const pattern of patterns) {
-      const field = fields.find(
-        (f) =>
-          f.name.toLowerCase().includes(pattern) ||
-          f.display_name.toLowerCase().includes(pattern),
-      );
+      const cleanPattern = normalizeColName(pattern);
+      const field = fields.find((f) => {
+        const cleanName = normalizeColName(f.name);
+        const cleanDisplayName = normalizeColName(f.display_name);
+        return (
+          cleanName.includes(cleanPattern) ||
+          cleanDisplayName.includes(cleanPattern)
+        );
+      });
       if (field) return field.id;
     }
     return null;
@@ -330,51 +335,48 @@ export async function getMailingList(
 
   const nameFieldId = findField([
     "name",
-    "full_name",
     "fullname",
-    "customer_name",
-    "contact_name",
+    "customername",
+    "contactname",
     "氏名",
     "名前",
     "顧客名",
   ]);
-  const emailFieldId = findField([
-    "email",
-    "mail",
-    "e-mail",
-    "email_address",
-    "メール",
-    "eメール",
-    "電子メール",
-    "email_addr",
-    "mailing",
-    "used_for_mailing",
-  ]);
+  const emailFieldId = findField(["email", "mail", "メール", "eメール"]);
   const addressFieldId = findField([
-    "address",
+    "add3",
+    "address3",
     "street",
-    "address1",
-    "street_address",
+    "banchi",
     "住所",
-    "アドレス",
+    "address",
+    "番地",
+    "町域",
   ]);
-  const cityFieldId = findField(["city", "town", "市", "都市"]);
+  const cityFieldId = findField([
+    "add2",
+    "address2",
+    "city",
+    "town",
+    "ward",
+    "shikuchoson",
+    "市区町村",
+    "市",
+    "区",
+  ]);
   const stateFieldId = findField([
+    "add1",
+    "address1",
     "state",
+    "pref",
     "province",
-    "region",
+    "todofuken",
     "都道府県",
     "県",
     "州",
+    "region",
   ]);
-  const zipcodeFieldId = findField([
-    "zip",
-    "zipcode",
-    "postal",
-    "postal_code",
-    "postcode",
-    "郵便番号",
-  ]);
+  const zipcodeFieldId = findField(["zip", "postal", "郵便番号"]);
   const countryFieldId = findField(["country", "nation", "国"]);
 
   const breakoutFields: number[] = [
@@ -400,14 +402,16 @@ export async function getMailingList(
         ? filterClauses[0]
         : ["and", ...filterClauses];
 
+  const sourceQuery: any = { "source-table": tableId };
+  if (scanLimit < 999999999) {
+    sourceQuery.limit = scanLimit;
+  }
+
   const query: any = {
     database: databaseId,
     type: "query",
     query: {
-      "source-query": {
-        "source-table": tableId,
-        limit: scanLimit, // Use the scanLimit here
-      },
+      "source-query": sourceQuery,
       fields: breakoutFields.map((id) => ["field", id, null]),
       limit,
     },
@@ -427,38 +431,67 @@ export async function getMailingList(
     body: JSON.stringify(query),
   });
 
-  // ... [Keep the existing column mapping and entry creation logic] ...
   const rows = result.data?.rows ?? [];
   const cols = result.data?.cols ?? [];
 
   const colIndexMap: Record<string, number> = {};
   cols.forEach((col: any, index: number) => {
-    const name = col.name.toLowerCase();
-    if (name.includes("name") && !("name" in colIndexMap))
+    const cleanName = normalizeColName(col.name);
+    const match = (kws: string[]) => kws.some((kw) => cleanName.includes(kw));
+
+    if (match(["name", "氏名", "名前"]) && !("name" in colIndexMap))
       colIndexMap.name = index;
-    if (
-      (name.includes("email") || name.includes("mail")) &&
-      !("email" in colIndexMap)
-    )
+    if (match(["email", "mail", "メール"]) && !("email" in colIndexMap))
       colIndexMap.email = index;
     if (
-      (name.includes("address") || name.includes("street")) &&
-      !("address" in colIndexMap)
+      match([
+        "add3",
+        "address3",
+        "street",
+        "banchi",
+        "住所",
+        "address",
+        "番地",
+        "町域",
+      ]) &&
+      !("address" in colIndexMap) &&
+      !cleanName.includes("add1") &&
+      !cleanName.includes("add2")
     )
       colIndexMap.address = index;
-    if (name.includes("city") && !("city" in colIndexMap))
+    if (
+      match([
+        "add2",
+        "address2",
+        "city",
+        "town",
+        "ward",
+        "市区町村",
+        "市",
+        "区",
+      ]) &&
+      !("city" in colIndexMap)
+    )
       colIndexMap.city = index;
     if (
-      (name.includes("state") || name.includes("province")) &&
+      match([
+        "add1",
+        "address1",
+        "state",
+        "pref",
+        "province",
+        "todofuken",
+        "都道府県",
+        "県",
+        "州",
+        "region",
+      ]) &&
       !("state" in colIndexMap)
     )
       colIndexMap.state = index;
-    if (
-      (name.includes("zip") || name.includes("postal")) &&
-      !("zipcode" in colIndexMap)
-    )
+    if (match(["zip", "postal", "郵便番号"]) && !("zipcode" in colIndexMap))
       colIndexMap.zipcode = index;
-    if (name.includes("country") && !("country" in colIndexMap))
+    if (match(["country", "nation", "国"]) && !("country" in colIndexMap))
       colIndexMap.country = index;
   });
 
@@ -489,7 +522,28 @@ export async function getMailingList(
         : "",
   }));
 
-  // Pass scanLimit to getCount as well
+  // FIXED: Push entries WITH EMAILS to the very top, then sort by least amount of nulls
+  entries.sort((a, b) => {
+    const aHasEmail =
+      a.email && a.email.trim() !== "null" && a.email.trim() !== "" ? 1 : 0;
+    const bHasEmail =
+      b.email && b.email.trim() !== "null" && b.email.trim() !== "" ? 1 : 0;
+
+    if (aHasEmail !== bHasEmail) {
+      return bHasEmail - aHasEmail; // 1 comes before 0
+    }
+
+    const aPop = Object.values(a).filter(
+      (v) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    const bPop = Object.values(b).filter(
+      (v) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    return bPop - aPop;
+  });
+
   const countResult = await getCount(databaseId, tableId, filters, scanLimit);
 
   return {
@@ -655,12 +709,9 @@ export async function runNativeQuery(
     body: JSON.stringify(query),
   });
 
-  // NEW: Catch silent Metabase SQL errors and throw them to the frontend!
   if (result.status === "failed" || result.error) {
     const errorMsg = result.error || result.error_type || "Unknown SQL Error";
     console.error("🚨 METABASE SQL ERROR:", errorMsg);
-
-    // This will force the red toast error on your screen so we can read it!
     throw new Error(`SQL Server Error: ${errorMsg}`);
   }
 
@@ -671,7 +722,7 @@ export async function runNativeQuery(
   };
 }
 
-// --- MS SQL SERVER V2 FUNCTIONS (APPLICATION-LAYER JOIN) ---
+// --- MS SQL SERVER V2 FUNCTIONS (OPTIMIZED FOR MILLIONS OF ROWS) ---
 
 export async function getMarketingPreviewV2(
   databaseId: number,
@@ -686,56 +737,6 @@ export async function getMarketingPreviewV2(
   const masterTable = masterTables.find((t) => t.id === masterTableId);
   if (!masterTable) throw new Error("Master table not found");
 
-  // 1. FETCH SUPPRESSED IDs FIRST (Step 1 of App-Join)
-  let suppressedIds = new Set<string>();
-  let suppressionRefFieldName: string | null = null;
-  if (historyDbId && historyTableId) {
-    console.log("Fetching suppression list from DB:", historyDbId, "table:", historyTableId);
-    try {
-      const suppTables = await getTables(historyDbId);
-      const suppTable = suppTables.find((t) => t.id === historyTableId);
-      if (suppTable) {
-        const suppFields = await getFields(historyTableId);
-        const refField = suppFields.find((f: any) =>
-          f.semantic_type !== "type/PK" && (
-            f.name.toLowerCase().includes("ref") ||
-            f.name.toLowerCase().includes("email") ||
-            f.name.toLowerCase().includes("mail") ||
-            f.name.toLowerCase().includes("customer")
-          )
-        ) || suppFields.find((f: any) =>
-          f.semantic_type !== "type/PK" &&
-          f.base_type === "type/Text"
-        );
-        const dateField = suppFields.find((f: any) =>
-          f.base_type === "type/DateTime" || f.base_type === "type/Date"
-        );
-
-        if (refField) {
-          suppressionRefFieldName = refField.name;
-          let suppSql: string;
-          if (dateField) {
-            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
-          } else {
-            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}]`;
-          }
-
-          console.log("Suppression SQL:", suppSql);
-          const suppResult = await runNativeQuery(historyDbId, suppSql);
-          suppressedIds = new Set(
-            suppResult.rows.map((r) => String(r[0]).toLowerCase().trim()),
-          );
-          console.log(`Loaded ${suppressedIds.size} suppressed IDs (field: ${refField.name}) into memory.`);
-        } else {
-          console.warn("No suitable reference field found in suppression table");
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load suppression list:", e);
-    }
-  }
-
-  // 2. BUILD THE MASTER QUERY
   let whereClause = "1=1";
   if (segments && segments.length > 0) {
     const segmentConditions = segments
@@ -782,51 +783,104 @@ export async function getMarketingPreviewV2(
       whereClause += ` AND (${segmentConditions.join(" OR ")})`;
   }
 
-  // We fetch a bit extra to account for people who will be filtered out
   const sql = `SELECT TOP ${contactCap * 3} * FROM [${masterTable.name}] WHERE ${whereClause};`;
   console.log("Executing Master Query:", sql);
   const result = await runNativeQuery(databaseId, sql);
+  console.log(
+    "👉 RAW COLUMNS FROM DB:",
+    result.cols.map((c: any) => c.name),
+  );
 
-  // 3. APPLY IN-MEMORY FILTERING (Step 2 of App-Join)
   const finalRows = [];
   let excludedCount = 0;
+  let suppressedIds = new Set<string>();
 
-  // Find the best matching field in the master table for suppression join
-  // Try to match by: email, customer ref/id, or any field that could be the join key
-  const joinFieldIndices: number[] = [];
-  if (suppressedIds.size > 0) {
-    // Priority 1: email fields
+  const exportJoinFieldIndices: number[] = [];
+  if (historyDbId && historyTableId) {
     const emailIdx = result.cols.findIndex(
       (c: any) =>
-        c.name.toLowerCase() === "email" ||
-        c.name.toLowerCase() === "email_address",
+        normalizeColName(c.name).includes("email") ||
+        normalizeColName(c.name).includes("mail"),
     );
-    if (emailIdx !== -1) joinFieldIndices.push(emailIdx);
+    if (emailIdx !== -1) exportJoinFieldIndices.push(emailIdx);
 
-    // Priority 2: customer ref/id fields (matching suppression ref field pattern)
     const custRefIdx = result.cols.findIndex(
       (c: any) =>
-        c.name.toLowerCase().includes("cust") &&
-        (c.name.toLowerCase().includes("id") || c.name.toLowerCase().includes("no")),
+        normalizeColName(c.name).includes("cust") &&
+        (normalizeColName(c.name).includes("id") ||
+          normalizeColName(c.name).includes("no")),
     );
-    if (custRefIdx !== -1 && !joinFieldIndices.includes(custRefIdx)) joinFieldIndices.push(custRefIdx);
+    if (custRefIdx !== -1 && !exportJoinFieldIndices.includes(custRefIdx))
+      exportJoinFieldIndices.push(custRefIdx);
 
-    // Priority 3: prospect/reference ID fields
-    const prospectIdx = result.cols.findIndex(
-      (c: any) =>
-        c.name.toLowerCase().includes("prospect") ||
-        c.name.toLowerCase().includes("ref_id") ||
-        c.name.toLowerCase().includes("reference"),
-    );
-    if (prospectIdx !== -1 && !joinFieldIndices.includes(prospectIdx)) joinFieldIndices.push(prospectIdx);
+    if (exportJoinFieldIndices.length > 0) {
+      const candidateKeys = new Set<string>();
+      result.rows.forEach((row) => {
+        exportJoinFieldIndices.forEach((idx) => {
+          const val = String(row[idx]).toLowerCase().trim();
+          if (val && val !== "null" && val !== "") candidateKeys.add(val);
+        });
+      });
 
-    console.log("Suppression join fields:", joinFieldIndices.map(i => result.cols[i].name));
+      if (candidateKeys.size > 0) {
+        try {
+          const suppTables = await getTables(historyDbId);
+          const suppTable = suppTables.find((t) => t.id === historyTableId);
+
+          if (suppTable) {
+            const suppFields = await getFields(historyTableId);
+            const refField =
+              suppFields.find(
+                (f: any) =>
+                  f.semantic_type !== "type/PK" &&
+                  (normalizeColName(f.name).includes("ref") ||
+                    normalizeColName(f.name).includes("email") ||
+                    normalizeColName(f.name).includes("mail") ||
+                    normalizeColName(f.name).includes("customer")),
+              ) ||
+              suppFields.find(
+                (f: any) =>
+                  f.semantic_type !== "type/PK" && f.base_type === "type/Text",
+              );
+
+            const dateField = suppFields.find(
+              (f: any) =>
+                f.base_type === "type/DateTime" || f.base_type === "type/Date",
+            );
+
+            if (refField) {
+              const candidateArray = Array.from(candidateKeys);
+              const chunkSize = 2000;
+
+              for (let i = 0; i < candidateArray.length; i += chunkSize) {
+                const chunk = candidateArray.slice(i, i + chunkSize);
+                const inValues = chunk
+                  .map((v) => `'${v.replace(/'/g, "''")}'`)
+                  .join(",");
+
+                let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${refField.name}] IN (${inValues})`;
+                if (dateField) {
+                  suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+                }
+
+                const suppResult = await runNativeQuery(historyDbId, suppSql);
+                suppResult.rows.forEach((r) =>
+                  suppressedIds.add(String(r[0]).toLowerCase().trim()),
+                );
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Failed to lookup suppression list via IN clause:", e);
+        }
+      }
+    }
   }
 
   for (const row of result.rows) {
-    if (joinFieldIndices.length > 0) {
+    if (exportJoinFieldIndices.length > 0) {
       let isSuppressed = false;
-      for (const idx of joinFieldIndices) {
+      for (const idx of exportJoinFieldIndices) {
         const val = String(row[idx]).toLowerCase().trim();
         if (val && val !== "null" && val !== "" && suppressedIds.has(val)) {
           isSuppressed = true;
@@ -842,16 +896,108 @@ export async function getMarketingPreviewV2(
     if (finalRows.length >= contactCap) break;
   }
 
+  // FIXED: Push previews WITH EMAILS to the top, then sort by least nulls
+  const emailIndex = result.cols.findIndex((c: any) => {
+    const n = normalizeColName(c.name);
+    return n.includes("email") || n.includes("mail") || n.includes("メール");
+  });
+
+  finalRows.sort((a, b) => {
+    const aHasEmail =
+      emailIndex !== -1 &&
+      a[emailIndex] &&
+      String(a[emailIndex]).trim() !== "null" &&
+      String(a[emailIndex]).trim() !== ""
+        ? 1
+        : 0;
+    const bHasEmail =
+      emailIndex !== -1 &&
+      b[emailIndex] &&
+      String(b[emailIndex]).trim() !== "null" &&
+      String(b[emailIndex]).trim() !== ""
+        ? 1
+        : 0;
+
+    if (aHasEmail !== bHasEmail) {
+      return bHasEmail - aHasEmail; // 1 comes before 0
+    }
+
+    const aPop = a.filter(
+      (v: any) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    const bPop = b.filter(
+      (v: any) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    return bPop - aPop;
+  });
+
   const sample = finalRows.slice(0, 50).map((row) => {
     const obj: any = {};
     result.cols.forEach((col: any, i: number) => {
-      obj[col.name.toLowerCase()] = row[i];
+      const cleanKey = normalizeColName(col.name);
+      obj[cleanKey] = row[i];
     });
+
+    const findVal = (keywords: string[]) => {
+      for (const kw of keywords) {
+        if (obj[kw] !== undefined && obj[kw] !== null && obj[kw] !== "")
+          return obj[kw];
+        const matchingKey = Object.keys(obj).find((k) => k.includes(kw));
+        if (matchingKey && obj[matchingKey] !== null && obj[matchingKey] !== "")
+          return obj[matchingKey];
+      }
+      return "";
+    };
+
     return {
-      name: obj.name || obj.full_name || "Unknown",
-      email: obj.email || obj.mail || obj.email_address || "N/A",
-      city: obj.city || "",
-      state: obj.state || "",
+      name:
+        findVal([
+          "name",
+          "fullname",
+          "customername",
+          "contactname",
+          "氏名",
+          "名前",
+          "顧客名",
+        ]) || "Unknown",
+      email: findVal(["email", "mail", "メール", "eメール"]) || "N/A",
+      city: findVal([
+        "city",
+        "town",
+        "add2",
+        "address2",
+        "ward",
+        "shikuchoson",
+        "市区町村",
+        "市",
+        "区",
+      ]),
+      state: findVal([
+        "state",
+        "province",
+        "pref",
+        "add1",
+        "address1",
+        "region",
+        "todofuken",
+        "都道府県",
+        "県",
+        "州",
+      ]),
+      address: findVal([
+        "add3",
+        "address3",
+        "street",
+        "banchi",
+        "line1",
+        "住所",
+        "アドレス",
+        "address",
+        "番地",
+        "町域",
+      ]),
     };
   });
 
@@ -874,22 +1020,10 @@ export async function runMarketingExportAndLogV2(
   excludeDays: number,
   campaignCode: string,
 ): Promise<string> {
-  // 1. Fetch exactly like preview
-  const previewData = await getMarketingPreviewV2(
-    databaseId,
-    masterTableId,
-    historyDbId,
-    historyTableId,
-    segments,
-    contactCap,
-    excludeDays,
-  );
-
   const masterTables = await getTables(databaseId);
   const masterTable = masterTables.find((t) => t.id === masterTableId);
   if (!masterTable) throw new Error("Master table not found");
 
-  // For the actual export, we need all the columns again
   let whereClause = "1=1";
   if (segments && segments.length > 0) {
     const segmentConditions = segments
@@ -938,77 +1072,90 @@ export async function runMarketingExportAndLogV2(
   const sql = `SELECT TOP ${contactCap * 3} * FROM [${masterTable.name}] WHERE ${whereClause};`;
   const exportData = await runNativeQuery(databaseId, sql);
 
-  // Apply the same suppression logic
   let suppressedIds = new Set<string>();
-  if (historyDbId && historyTableId) {
-    try {
-      const suppTables = await getTables(historyDbId);
-      const suppTable = suppTables.find((t) => t.id === historyTableId);
-      if (suppTable) {
-        const suppFields = await getFields(historyTableId);
-        const refField = suppFields.find((f: any) =>
-          f.semantic_type !== "type/PK" && (
-            f.name.toLowerCase().includes("ref") ||
-            f.name.toLowerCase().includes("email") ||
-            f.name.toLowerCase().includes("mail") ||
-            f.name.toLowerCase().includes("customer")
-          )
-        ) || suppFields.find((f: any) =>
-          f.semantic_type !== "type/PK" &&
-          f.base_type === "type/Text"
-        );
-        const dateField = suppFields.find((f: any) =>
-          f.base_type === "type/DateTime" || f.base_type === "type/Date"
-        );
-
-        if (refField) {
-          let suppSql: string;
-          if (dateField) {
-            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
-          } else {
-            suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}]`;
-          }
-
-          const suppResult = await runNativeQuery(historyDbId, suppSql);
-          suppressedIds = new Set(
-            suppResult.rows.map((r) => String(r[0]).toLowerCase().trim()),
-          );
-          console.log(`Export: Loaded ${suppressedIds.size} suppressed IDs (field: ${refField.name})`);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load suppression list for export:", e);
-    }
-  }
-
-  const finalRows = [];
-
-  // Find join fields for suppression matching
   const exportJoinFieldIndices: number[] = [];
-  if (suppressedIds.size > 0) {
+
+  if (historyDbId && historyTableId) {
     const emailIdx = exportData.cols.findIndex(
       (c: any) =>
-        c.name.toLowerCase() === "email" ||
-        c.name.toLowerCase() === "email_address",
+        normalizeColName(c.name).includes("email") ||
+        normalizeColName(c.name).includes("mail"),
     );
     if (emailIdx !== -1) exportJoinFieldIndices.push(emailIdx);
 
     const custRefIdx = exportData.cols.findIndex(
       (c: any) =>
-        c.name.toLowerCase().includes("cust") &&
-        (c.name.toLowerCase().includes("id") || c.name.toLowerCase().includes("no")),
+        normalizeColName(c.name).includes("cust") &&
+        (normalizeColName(c.name).includes("id") ||
+          normalizeColName(c.name).includes("no")),
     );
-    if (custRefIdx !== -1 && !exportJoinFieldIndices.includes(custRefIdx)) exportJoinFieldIndices.push(custRefIdx);
+    if (custRefIdx !== -1 && !exportJoinFieldIndices.includes(custRefIdx))
+      exportJoinFieldIndices.push(custRefIdx);
 
-    const prospectIdx = exportData.cols.findIndex(
-      (c: any) =>
-        c.name.toLowerCase().includes("prospect") ||
-        c.name.toLowerCase().includes("ref_id") ||
-        c.name.toLowerCase().includes("reference"),
-    );
-    if (prospectIdx !== -1 && !exportJoinFieldIndices.includes(prospectIdx)) exportJoinFieldIndices.push(prospectIdx);
+    if (exportJoinFieldIndices.length > 0) {
+      const candidateKeys = new Set<string>();
+      exportData.rows.forEach((row) => {
+        exportJoinFieldIndices.forEach((idx) => {
+          const val = String(row[idx]).toLowerCase().trim();
+          if (val && val !== "null" && val !== "") candidateKeys.add(val);
+        });
+      });
+
+      if (candidateKeys.size > 0) {
+        try {
+          const suppTables = await getTables(historyDbId);
+          const suppTable = suppTables.find((t) => t.id === historyTableId);
+          if (suppTable) {
+            const suppFields = await getFields(historyTableId);
+            const refField =
+              suppFields.find(
+                (f: any) =>
+                  f.semantic_type !== "type/PK" &&
+                  (normalizeColName(f.name).includes("ref") ||
+                    normalizeColName(f.name).includes("email") ||
+                    normalizeColName(f.name).includes("mail") ||
+                    normalizeColName(f.name).includes("customer")),
+              ) ||
+              suppFields.find(
+                (f: any) =>
+                  f.semantic_type !== "type/PK" && f.base_type === "type/Text",
+              );
+
+            const dateField = suppFields.find(
+              (f: any) =>
+                f.base_type === "type/DateTime" || f.base_type === "type/Date",
+            );
+
+            if (refField) {
+              const candidateArray = Array.from(candidateKeys);
+              const chunkSize = 2000;
+
+              for (let i = 0; i < candidateArray.length; i += chunkSize) {
+                const chunk = candidateArray.slice(i, i + chunkSize);
+                const inValues = chunk
+                  .map((v) => `'${v.replace(/'/g, "''")}'`)
+                  .join(",");
+
+                let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${refField.name}] IN (${inValues})`;
+                if (dateField) {
+                  suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+                }
+
+                const suppResult = await runNativeQuery(historyDbId, suppSql);
+                suppResult.rows.forEach((r) =>
+                  suppressedIds.add(String(r[0]).toLowerCase().trim()),
+                );
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Failed to run chunked lookup for export:", e);
+        }
+      }
+    }
   }
 
+  const finalRows = [];
   for (const row of exportData.rows) {
     if (exportJoinFieldIndices.length > 0) {
       let isSuppressed = false;
@@ -1025,39 +1172,78 @@ export async function runMarketingExportAndLogV2(
     if (finalRows.length >= contactCap) break;
   }
 
-  const emailIndex = exportData.cols.findIndex(
-    (c: any) =>
-      c.name.toLowerCase() === "email" ||
-      c.name.toLowerCase() === "email_address" ||
-      c.name.toLowerCase().includes("mail"),
-  );
+  // FIXED: Push exports WITH EMAILS to the top, then sort by least nulls
+  const emailIndex = exportData.cols.findIndex((c: any) => {
+    const n = normalizeColName(c.name);
+    return n.includes("email") || n.includes("mail") || n.includes("メール");
+  });
 
-  // 2. Write-Back to the specific Suppression Database!
-  if (historyDbId && historyTableId && finalRows.length > 0 && emailIndex !== -1) {
+  finalRows.sort((a, b) => {
+    const aHasEmail =
+      emailIndex !== -1 &&
+      a[emailIndex] &&
+      String(a[emailIndex]).trim() !== "null" &&
+      String(a[emailIndex]).trim() !== ""
+        ? 1
+        : 0;
+    const bHasEmail =
+      emailIndex !== -1 &&
+      b[emailIndex] &&
+      String(b[emailIndex]).trim() !== "null" &&
+      String(b[emailIndex]).trim() !== ""
+        ? 1
+        : 0;
+
+    if (aHasEmail !== bHasEmail) {
+      return bHasEmail - aHasEmail; // 1 comes before 0
+    }
+
+    const aPop = a.filter(
+      (v: any) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    const bPop = b.filter(
+      (v: any) =>
+        v !== null && v !== "" && String(v).trim().toLowerCase() !== "null",
+    ).length;
+    return bPop - aPop;
+  });
+
+  if (
+    historyDbId &&
+    historyTableId &&
+    finalRows.length > 0 &&
+    emailIndex !== -1
+  ) {
     try {
       const suppTables = await getTables(historyDbId);
       const suppTable = suppTables.find((t) => t.id === historyTableId);
       if (suppTable) {
         const suppFields = await getFields(historyTableId);
-        const refField = suppFields.find((f: any) =>
-          f.name.toLowerCase().includes("reference") ||
-          f.name.toLowerCase().includes("email") ||
-          f.name.toLowerCase().includes("mail")
+        const refField = suppFields.find(
+          (f: any) =>
+            normalizeColName(f.name).includes("reference") ||
+            normalizeColName(f.name).includes("email") ||
+            normalizeColName(f.name).includes("mail"),
         );
-        const dateField = suppFields.find((f: any) =>
-          f.name.toLowerCase().includes("export_date") ||
-          f.name.toLowerCase().includes("date") ||
-          f.name.toLowerCase().includes("sent")
+        const dateField = suppFields.find(
+          (f: any) =>
+            normalizeColName(f.name).includes("exportdate") ||
+            normalizeColName(f.name).includes("date") ||
+            normalizeColName(f.name).includes("sent"),
         );
-        const codeField = suppFields.find((f: any) =>
-          f.name.toLowerCase().includes("campaign") ||
-          f.name.toLowerCase().includes("code")
+        const codeField = suppFields.find(
+          (f: any) =>
+            normalizeColName(f.name).includes("campaign") ||
+            normalizeColName(f.name).includes("code"),
         );
 
         if (refField && dateField) {
           const emailsToLog = finalRows
             .map((row) => row[emailIndex])
-            .filter((email) => email && email !== "null" && email.trim() !== "");
+            .filter(
+              (email) => email && email !== "null" && email.trim() !== "",
+            );
 
           if (emailsToLog.length > 0) {
             const columns = codeField
@@ -1067,13 +1253,15 @@ export async function runMarketingExportAndLogV2(
               .map((email) =>
                 codeField
                   ? `('${email.replace(/'/g, "''")}', '${campaignCode}', CAST(GETDATE() AS DATE))`
-                  : `('${email.replace(/'/g, "''")}', CAST(GETDATE() AS DATE))`
+                  : `('${email.replace(/'/g, "''")}', CAST(GETDATE() AS DATE))`,
               )
               .join(",");
             const insertSql = `INSERT INTO [${suppTable.name}] (${columns}) VALUES ${values};`;
             try {
               await runNativeQuery(historyDbId, insertSql);
-              console.log(`Logged ${emailsToLog.length} emails to suppression list.`);
+              console.log(
+                `Logged ${emailsToLog.length} emails to suppression list.`,
+              );
             } catch (e) {
               console.error("Failed to log to suppression list:", e);
             }

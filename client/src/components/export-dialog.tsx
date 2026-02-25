@@ -1,4 +1,4 @@
-import { Download, Copy, Check, FileSpreadsheet, Mail } from "lucide-react";
+import { Download, Copy, Check, Mail } from "lucide-react";
 import { useState } from "react";
 import {
   Dialog,
@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Table,
   TableBody,
@@ -39,17 +38,25 @@ export function ExportDialog({
     const header = "Name\tEmail\tAddress\tCity\tState\tZipcode\tCountry";
     const rows = entries.map(
       (e) =>
-        `${e.name || ""}\t${e.email || ""}\t${e.address || ""}\t${e.city || ""}\t${e.state || ""}\t${e.zipcode || ""}\t${e.country || ""}`
+        `${e.name || ""}\t${e.email || ""}\t${e.address || ""}\t${e.city || ""}\t${e.state || ""}\t${e.zipcode || ""}\t${e.country || ""}`,
     );
     const text = [header, ...rows].join("\n");
-    
+
     await navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownloadCSV = () => {
-    const header = ["Name", "Email", "Address", "City", "State", "Zipcode", "Country"];
+    const header = [
+      "Name",
+      "Email",
+      "Address",
+      "City",
+      "State",
+      "Zipcode",
+      "Country",
+    ];
     const rows = entries.map((e) => [
       e.name || "",
       e.email || "",
@@ -59,14 +66,14 @@ export function ExportDialog({
       e.zipcode || "",
       e.country || "",
     ]);
-    
+
     const csvContent = [
       header.join(","),
       ...rows.map((row) =>
-        row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")
+        row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","),
       ),
     ].join("\n");
-    
+
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -87,7 +94,8 @@ export function ExportDialog({
             Mailing List Generated
           </DialogTitle>
           <DialogDescription className="flex items-center gap-2">
-            Successfully exported {total.toLocaleString()} contact{total !== 1 ? "s" : ""}
+            Successfully exported {total.toLocaleString()} contact
+            {total !== 1 ? "s" : ""}
             {entries.length < total && (
               <Badge variant="secondary" className="text-xs">
                 Showing first {entries.length}
@@ -96,37 +104,73 @@ export function ExportDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 min-h-0 mt-4">
-          <ScrollArea className="h-[400px] rounded-md border">
-            <Table>
+        {/* Using a native div with overflow-auto for reliable 2-axis scrolling. 
+           relative + absolute inset-0 trick ensures the scroll area fills the flex parent correctly.
+        */}
+        <div className="flex-1 min-h-[400px] mt-4 border rounded-md relative overflow-hidden bg-background">
+          <div className="absolute inset-0 overflow-auto">
+            <Table className="w-max min-w-full">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="sticky top-0 bg-background">Name</TableHead>
-                  <TableHead className="sticky top-0 bg-background">Email</TableHead>
-                  <TableHead className="sticky top-0 bg-background">Address</TableHead>
-                  <TableHead className="sticky top-0 bg-background">City</TableHead>
-                  <TableHead className="sticky top-0 bg-background">State</TableHead>
-                  <TableHead className="sticky top-0 bg-background">Zipcode</TableHead>
-                  <TableHead className="sticky top-0 bg-background">Country</TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    Name
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    Email
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    Address
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    City
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    State
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    Zipcode
+                  </TableHead>
+                  <TableHead className="sticky top-0 bg-background px-4 shadow-sm z-10 font-bold text-foreground">
+                    Country
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {entries.map((entry, index) => (
-                  <TableRow key={index} data-testid={`row-entry-${index}`}>
-                    <TableCell className="font-medium">{entry.name || "-"}</TableCell>
-                    <TableCell>{entry.email || "-"}</TableCell>
-                    <TableCell className="max-w-[200px] truncate" title={entry.address}>
+                  <TableRow
+                    key={index}
+                    data-testid={`row-entry-${index}`}
+                    className="hover:bg-muted/50"
+                  >
+                    <TableCell className="font-medium whitespace-nowrap px-4">
+                      {entry.name || "-"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-4">
+                      {entry.email || "-"}
+                    </TableCell>
+                    <TableCell
+                      className="whitespace-nowrap px-4 max-w-[300px] truncate"
+                      title={entry.address}
+                    >
                       {entry.address || "-"}
                     </TableCell>
-                    <TableCell>{entry.city || "-"}</TableCell>
-                    <TableCell>{entry.state || "-"}</TableCell>
-                    <TableCell>{entry.zipcode || "-"}</TableCell>
-                    <TableCell>{entry.country || "-"}</TableCell>
+                    <TableCell className="whitespace-nowrap px-4">
+                      {entry.city || "-"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-4">
+                      {entry.state || "-"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-4">
+                      {entry.zipcode || "-"}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap px-4">
+                      {entry.country || "-"}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </ScrollArea>
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mt-4 pt-4 border-t">
