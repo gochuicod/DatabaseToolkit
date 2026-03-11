@@ -7,7 +7,12 @@ export const openai = new OpenAI({
 });
 
 interface AnalysisResult {
-  suggestions: Array<{ segment: string; confidence: number; reasoning: string; tableId?: number }>;
+  suggestions: Array<{
+    segment: string;
+    confidence: number;
+    reasoning: string;
+    tableId?: number;
+  }>;
   suggestedAgeRange: string | null;
   reasoning: string;
 }
@@ -15,11 +20,11 @@ interface AnalysisResult {
 // Analyze with a single table's fields
 export async function analyzeMarketingConcept(
   concept: string,
-  fields: MetabaseField[]
+  fields: MetabaseField[],
 ): Promise<AnalysisResult> {
-  const fieldDescriptions = fields.map(f => 
-    `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`
-  ).join("\n");
+  const fieldDescriptions = fields
+    .map((f) => `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`)
+    .join("\n");
 
   const systemPrompt = `You are a marketing data analyst. Your job is to analyze campaign concepts and suggest relevant customer segments based on the available database fields.
 
@@ -56,7 +61,10 @@ Examples of segment formats:
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `Analyze this campaign concept and suggest matching customer segments based on the available database fields:\n\n${concept}` }
+      {
+        role: "user",
+        content: `Analyze this campaign concept and suggest matching customer segments based on the available database fields:\n\n${concept}`,
+      },
     ],
     response_format: { type: "json_object" },
     temperature: 0.7,
@@ -69,7 +77,7 @@ Examples of segment formats:
     return {
       suggestions: [],
       suggestedAgeRange: null,
-      reasoning: "Failed to parse AI response"
+      reasoning: "Failed to parse AI response",
     };
   }
 }
@@ -77,28 +85,48 @@ Examples of segment formats:
 // Analyze with ALL tables in a database
 export async function analyzeMarketingConceptMultiTable(
   concept: string,
-  tablesWithFields: TableWithFields[]
+  tablesWithFields: TableWithFields[],
 ): Promise<AnalysisResult> {
   // Create a description of all tables and their fields
-  const tableDescriptions = tablesWithFields.map(table => {
-    const fieldList = table.fields.map(f => 
-      `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`
-    ).join("\n");
-    return `TABLE: ${table.display_name || table.name} (id: ${table.id})\n${fieldList}`;
-  }).join("\n\n");
+  const tableDescriptions = tablesWithFields
+    .map((table) => {
+      const fieldList = table.fields
+        .map(
+          (f) =>
+            `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`,
+        )
+        .join("\n");
+      return `TABLE: ${table.display_name || table.name} (id: ${table.id})\n${fieldList}`;
+    })
+    .join("\n\n");
 
   // Check if the recommended email table exists
-  const hasRecommendedTable = tablesWithFields.some(t => 
-    t.name.toLowerCase().includes("acquired_rpt_hj") || 
-    t.name.toLowerCase().includes("jason_2005_2006")
+  const hasRecommendedTable = tablesWithFields.some(
+    (t) =>
+      t.name.toLowerCase().includes("acquired_rpt_hj") ||
+      t.name.toLowerCase().includes("jason_2005_2006") ||
+      t.name.toLowerCase().includes("galaxy_individual") ||
+      t.name.toLowerCase().includes("galaxy individual"),
   );
-  
-  const recommendedTableNote = hasRecommendedTable ? `
+
+  const galaxyTable = tablesWithFields.find(
+    (t) =>
+      t.name.toLowerCase().includes("galaxy_individual") ||
+      t.name.toLowerCase().includes("galaxy individual"),
+  );
+
+  const recommendedTableNote = hasRecommendedTable
+    ? `
 PRIORITY TABLE FOR EMAIL CAMPAIGNS:
-The table "Acquired Rpt Hj Rpt Jason 2005 2006" (or similar name containing "acquired_rpt_hj" or "jason_2005_2006") contains the PRIMARY email data with a large dataset. 
+${
+  galaxyTable
+    ? `The table "${galaxyTable.name}" (galaxy_individual) is the PRIMARY customer master table. It contains all contact records with LTV fields (GL_LTV, TSI_LTV, SY_LTV, MD_LTV), demographics (ddob, gender, prefecture), and source/origin fields. Always prioritize segments from this table.`
+    : `The table "Acquired Rpt Hj Rpt Jason 2005 2006" (or similar name containing "acquired_rpt_hj" or "jason_2005_2006") contains the PRIMARY email data with a large dataset.`
+}
 When building email marketing campaigns, ALWAYS include at least one segment from this table as it has verified email addresses.
 Look for the "email" field in this table and prioritize segments that can filter this table.
-` : "";
+`
+    : "";
 
   const systemPrompt = `You are a marketing data analyst. Your job is to analyze campaign concepts and suggest relevant customer segments based on the available database tables and fields.
 
@@ -138,7 +166,10 @@ Examples of segment formats:
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `Analyze this campaign concept and suggest matching customer segments based on ALL available database tables and fields:\n\n${concept}` }
+      {
+        role: "user",
+        content: `Analyze this campaign concept and suggest matching customer segments based on ALL available database tables and fields:\n\n${concept}`,
+      },
     ],
     response_format: { type: "json_object" },
     temperature: 0.7,
@@ -151,7 +182,7 @@ Examples of segment formats:
     return {
       suggestions: [],
       suggestedAgeRange: null,
-      reasoning: "Failed to parse AI response"
+      reasoning: "Failed to parse AI response",
     };
   }
 }
@@ -162,68 +193,123 @@ export async function analyzeMarketingConceptMasterTable(
   masterTableFields: MetabaseField[],
   masterTableName: string,
   historyTableFields: MetabaseField[] | null,
-  historyTableName: string | null
+  historyTableName: string | null,
+  fieldSampleValues?: Record<string, string[]>,
 ): Promise<AnalysisResult> {
-  // Create a description of T1 fields
-  const masterFieldList = masterTableFields.map(f => 
-    `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`
-  ).join("\n");
+  // Create a description of T1 fields, including real sample values where available
+  const masterFieldList = masterTableFields
+    .map((f) => {
+      const base = `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`;
+      const samples = fieldSampleValues?.[f.name];
+      if (samples && samples.length > 0) {
+        return `${base}  [known values: ${samples
+          .slice(0, 20)
+          .map((v) => `"${v}"`)
+          .join(", ")}]`;
+      }
+      return base;
+    })
+    .join("\n");
 
   // Create a description of T2 fields if available
-  const historySection = historyTableFields && historyTableName ? `
+  const historySection =
+    historyTableFields && historyTableName
+      ? `
 
 T2: HISTORY/BEHAVIOR LOG TABLE: ${historyTableName}
 This table contains email campaign history with fields like:
-${historyTableFields.map(f => `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`).join("\n")}
+${historyTableFields.map((f) => `    - ${f.display_name || f.name} (${f.name}): ${f.base_type}`).join("\n")}
 
 The History table (T2) will be used to:
 1. EXCLUDE contacts who received emails recently (based on SentDate)
 2. Calculate engagement scores (based on Opened, Clicked fields)
-3. Prioritize highly engaged users for campaigns` : `
+3. Prioritize highly engaged users for campaigns`
+      : `
 
 NOTE: No History table (T2) is configured. The system will not be able to exclude recently-sent contacts or calculate engagement scores.`;
 
-  const systemPrompt = `You are a marketing data analyst. Your job is to analyze campaign concepts and suggest relevant customer segments based on the Master Email List table.
+  const isGalaxyTable =
+    masterTableName.toLowerCase().includes("galaxy_individual") ||
+    masterTableName.toLowerCase().includes("galaxy individual");
 
+  const galaxySchemaHints = isGalaxyTable
+    ? `
+
+GALAXY INDIVIDUAL TABLE SCHEMA HINTS:
+This is the main customer master table for a direct mail business. Key field patterns:
+- GL_LTV, TSI_LTV, SY_LTV, MD_LTV: Lifetime value per brand (GL=Gloria, TSI=True Spirit/Takeshi-i, SY=Sunny, MD=Modern Direct). A value > 0 means the contact is a buyer for that brand.
+- ddob: Date of birth (use for age targeting)
+- gender: Gender field
+- prefecture: Japanese prefecture (geographic targeting)
+- Source or OS fields: List origin codes — these often hold OSL (Outside Source List) category values, source codes, and acquisition flags
+- Email field: presence of email address
+- Mobile field: 1 = has mobile number
+
+When a campaign targets Gloria customers: filter GL_LTV > 0
+When a campaign targets TSI customers: filter TSI_LTV > 0
+When a campaign targets buyers (any brand): filter on LTV fields > 0
+For age-based targeting: use ddob with DATEDIFF
+`
+    : "";
+
+  const domainGlossary = `
+DIRECT MAIL INDUSTRY DOMAIN KNOWLEDGE:
+- OSL (Outside Source List): A rented or exchanged mailing list from an outside source. Contacts in an OSL category are likely to respond to similar offers.
+- Gloria OSL: Contacts from the Gloria brand's outside source lists — typically older demographics who have responded to spiritual, esoteric, or metaphysical direct mail products.
+- MD / MD After 2009: Contacts acquired via direct mail after 2009. "MD" as a source code means mail-acquired. "MD After 2009" means only recent mail acquisitions.
+- LTV (Lifetime Value): Total revenue a contact has generated. Higher LTV = higher value buyer.
+- RFM: Recency, Frequency, Monetary — classic direct mail segmentation. Contacts with recent, frequent, high-value purchases are the best targets.
+- Source codes: Short codes stored in Source/OS fields identifying how a contact was acquired (e.g., "GL_OSL", "TSI_DM", "MD_2010").
+
+ESO/SPIRITUAL PRODUCT DOMAIN KNOWLEDGE:
+When a campaign concept mentions "fortune", "luck", "astrology", "spiritual", "esoteric", "metaphysical", "feng shui", "psychic", "Gloria OSL", "astrology hotline", "lucky charm", "fortune-bringing", "religious goods", "esoteric merchandise", "astrology newsletter", "spiritual self-improvement":
+- These are PRODUCT CATEGORIES: look for product type fields, category fields, source fields, or campaign response fields
+- "Gloria OSL" is a SOURCE CATEGORY: map to Source, OS, or list-origin fields
+- Target contacts who are GL_LTV > 0 (bought Gloria products) and/or have a matching Source value
+- "Belief-driven purchasing" and "faith-based" = look for source/category fields that indicate spiritual or metaphysical product response
+- "Direct mail respondents" = contacts with non-null Source fields from DM sources, or MD_ prefixed source codes
+- "After 2009" or "MD After 2009" = look for acquisition date fields or source codes with year indicators
+`;
+
+  const systemPrompt = `You are a senior marketing data analyst specializing in direct mail campaigns. Your job is to analyze campaign concepts and suggest ONLY targeting rules that use REAL field names and REAL values from the actual database.
+
+CRITICAL RULES:
+1. ONLY suggest field names that appear in the field list below — never invent field names
+2. ONLY suggest values that appear in the "known values" list for that field — never invent values
+3. If you cannot find a matching field for a concept, say so in the reasoning instead of hallucinating a field name
+4. Use format "field_name:value" (no table prefix) — the field_name must EXACTLY match the database field name shown in parentheses
+${domainGlossary}${galaxySchemaHints}
 T1: MASTER EMAIL LIST TABLE: ${masterTableName}
-This table contains the primary contact data with these fields:
+This table contains the primary contact data with these fields (ONLY use these field names):
 ${masterFieldList}
 ${historySection}
 
-Based on the campaign description and available fields in T1, identify:
-1. Specific field-value combinations that would target the right customers FROM THE MASTER TABLE ONLY
-2. Look for fields like: segment, source, interest, age, dob, location, status, etc.
-3. Suggested age range if demographic targeting is implied
+Based on the campaign description and available fields in T1:
+1. Suggest field-value combinations that would target the right customers
+2. For each suggestion, the field name MUST be from the list above, and the value MUST be from the "known values" list if provided
+3. Include an age range suggestion if demographic targeting is implied
 
-IMPORTANT: 
-- Suggest segments ONLY from T1 (Master Table) fields
-- Use format "field_name:value" (without table prefix since we're only querying T1)
-- The system will automatically handle T2 exclusions based on user settings
-
-Respond with a JSON object containing:
+Respond with a JSON object:
 {
   "suggestions": [
     {
-      "segment": "field_name:value or field_name:condition",
+      "segment": "field_name:value",
       "confidence": 0.0-1.0,
-      "reasoning": "why this segment matches the campaign"
+      "reasoning": "why this segment matches — if no matching field exists, explain that here"
     }
   ],
   "suggestedAgeRange": ">50" or "25-40" or null,
-  "reasoning": "overall analysis explanation"
-}
-
-Examples of segment formats:
-- "segment:Travel_Interest" for filtering by segment field
-- "source:High_Net_Worth" for filtering by customer source
-- "interest:cultural_events" for filtering by interest field
-- "status:VIP" for filtering by customer status`;
+  "reasoning": "overall strategy explanation, including any limitations based on available fields"
+}`;
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `Analyze this campaign concept and suggest matching customer segments from the Master Table (T1):\n\n${concept}` }
+      {
+        role: "user",
+        content: `Analyze this campaign concept and suggest matching customer segments from the Master Table (T1):\n\n${concept}`,
+      },
     ],
     response_format: { type: "json_object" },
     temperature: 0.7,
@@ -236,7 +322,7 @@ Examples of segment formats:
     return {
       suggestions: [],
       suggestedAgeRange: null,
-      reasoning: "Failed to parse AI response"
+      reasoning: "Failed to parse AI response",
     };
   }
 }
@@ -266,11 +352,11 @@ interface TrendsICPResult {
 
 export async function runTrendsICPAnalysis(
   fields: MetabaseField[],
-  excludeMailed: boolean
+  excludeMailed: boolean,
 ): Promise<TrendsICPResult> {
-  const fieldDescriptions = fields.map(f => 
-    `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`
-  ).join("\n");
+  const fieldDescriptions = fields
+    .map((f) => `- ${f.display_name || f.name} (${f.name}): ${f.base_type}`)
+    .join("\n");
 
   const systemPrompt = `You are a marketing data analyst specializing in Trend Analysis and Ideal Customer Profile (ICP) identification.
 
@@ -321,7 +407,10 @@ The ICP segments should have actionable characteristics based on the available f
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: `Generate a comprehensive Trend & ICP Analysis for this customer database. ${excludeMailed ? "Exclude customers who have already been mailed from the analysis." : "Include all customers in the analysis."}` }
+      {
+        role: "user",
+        content: `Generate a comprehensive Trend & ICP Analysis for this customer database. ${excludeMailed ? "Exclude customers who have already been mailed from the analysis." : "Include all customers in the analysis."}`,
+      },
     ],
     response_format: { type: "json_object" },
     temperature: 0.7,
@@ -372,7 +461,7 @@ interface AnalysisSummaryResult {
 
 export async function generateAnalysisSummary(
   snapshot: SnapshotData,
-  icpSegments: ICPSegmentData[]
+  icpSegments: ICPSegmentData[],
 ): Promise<AnalysisSummaryResult> {
   const systemPrompt = `You are a Marketing Data Analyst. You will receive pre-aggregated customer data (NOT raw database rows).
 
@@ -408,15 +497,19 @@ CROSS-SELL OVERLAPS:
 - SY + GL Overlap: ${snapshot.syGlOverlap.toLocaleString()} customers buy both
 
 TOP 10 ICP SEGMENTS (by Avg Total LTV):
-${icpSegments.slice(0, 10).map((s, i) => 
-  `${i + 1}. ${s.gender || 'Unknown'} / ${s.ageGroup} / ${s.location}: ${s.customerCount.toLocaleString()} customers, Avg LTV ¥${s.avgTotalLtv.toLocaleString()}, Email: ${(s.emailRate * 100).toFixed(1)}%, Mobile: ${(s.mobileRate * 100).toFixed(1)}%`
-).join('\n')}`;
+${icpSegments
+  .slice(0, 10)
+  .map(
+    (s, i) =>
+      `${i + 1}. ${s.gender || "Unknown"} / ${s.ageGroup} / ${s.location}: ${s.customerCount.toLocaleString()} customers, Avg LTV ¥${s.avgTotalLtv.toLocaleString()}, Email: ${(s.emailRate * 100).toFixed(1)}%, Mobile: ${(s.mobileRate * 100).toFixed(1)}%`,
+  )
+  .join("\n")}`;
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: userContent }
+      { role: "user", content: userContent },
     ],
     response_format: { type: "json_object" },
     temperature: 0.3,
@@ -430,8 +523,8 @@ ${icpSegments.slice(0, 10).map((s, i) =>
     return {
       summary: "Unable to generate summary. Please try again.",
       topDemographic: "Analysis unavailable",
-      crossSellOpportunity: "Analysis unavailable", 
-      contactabilityWarning: "Analysis unavailable"
+      crossSellOpportunity: "Analysis unavailable",
+      contactabilityWarning: "Analysis unavailable",
     };
   }
 }
@@ -442,15 +535,17 @@ interface CustomAnalysisResult {
   summary: string;
 }
 
-export async function runCustomAnalysis(prompt: string): Promise<CustomAnalysisResult> {
+export async function runCustomAnalysis(
+  prompt: string,
+): Promise<CustomAnalysisResult> {
   return runCustomAnalysisWithData(prompt, null, null, []);
 }
 
 export async function runCustomAnalysisWithData(
-  prompt: string, 
-  tableSchema: any[] | null, 
-  realData: any | null, 
-  sampleData: any[]
+  prompt: string,
+  tableSchema: any[] | null,
+  realData: any | null,
+  sampleData: any[],
 ): Promise<CustomAnalysisResult> {
   let systemPrompt: string;
   let userContent: string;
@@ -486,7 +581,7 @@ Respond with a JSON object containing:
 }
 
 Use the actual data from the database. Include relevant columns and real values from the provided data.`;
-    
+
     userContent = prompt;
   } else {
     // No real data - use mock data approach
@@ -514,7 +609,7 @@ Generate 5-10 example results with appropriate column names.`;
     model: "gpt-4o",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: userContent }
+      { role: "user", content: userContent },
     ],
     response_format: { type: "json_object" },
     temperature: 0.5,
@@ -527,7 +622,8 @@ Generate 5-10 example results with appropriate column names.`;
     return {
       query: "Failed to generate query",
       results: [],
-      summary: "Failed to parse AI response. Please try again with a different prompt."
+      summary:
+        "Failed to parse AI response. Please try again with a different prompt.",
     };
   }
 }

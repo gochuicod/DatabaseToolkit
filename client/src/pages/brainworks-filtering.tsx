@@ -10,8 +10,6 @@ import {
   Check,
   ChevronDown,
   Loader2,
-  ArrowDownCircle,
-  Database as DatabaseIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -60,23 +58,13 @@ import type {
   ActiveFilter,
   CountResponse,
   FieldOption,
-  MailingListEntry,
   FilterOperator,
 } from "@shared/schema";
 
-// CONSTANT: A very high limit to represent "Everything"
 const MAX_FETCH_LIMIT = 999999999;
-// Standard incremental steps for scanning rows
-const LIMIT_OPTIONS = [100000, 200000, 300000, 400000, 500000, 1000000];
 
 export default function BrainworksFiltering() {
   const { toast } = useToast();
-
-  const [scanIncrement, setScanIncrement] = useState<number | "all">(100000);
-
-  // NEW: State for handling custom limits
-  const [isCustomLimit, setIsCustomLimit] = useState(false);
-  const [customLimitValue, setCustomLimitValue] = useState("");
 
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
     null,
@@ -90,10 +78,6 @@ export default function BrainworksFiltering() {
     Record<number, boolean>
   >({});
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
-  const [exportedEntries, setExportedEntries] = useState<MailingListEntry[]>(
-    [],
-  );
-  const [exportedTotal, setExportedTotal] = useState(0);
   const [addFilterOpen, setAddFilterOpen] = useState(false);
 
   const debouncedFilters = useDebounce(filters, 300);
@@ -172,7 +156,7 @@ export default function BrainworksFiltering() {
         databaseId: selectedDatabaseId,
         tableId: selectedTableId,
         filters: Object.values(debouncedFilters),
-        limit: scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement, // Increments the panel
+        limit: MAX_FETCH_LIMIT,
       });
       return response.json();
     },
@@ -186,73 +170,16 @@ export default function BrainworksFiltering() {
     },
   });
 
-  // Export mutation handles limit and offset correctly
-  const exportMutation = useMutation<
-    { entries: MailingListEntry[]; total: number },
-    Error,
-    { isLoadMore?: boolean; overrideScanLimit?: number }
-  >({
-    mutationFn: async ({ isLoadMore = false, overrideScanLimit }) => {
-      if (!selectedDatabaseId || !selectedTableId) {
-        throw new Error("Please select a table first");
-      }
-
-      const offsetToUse = isLoadMore ? exportedEntries.length : 0;
-      let limitToUse = overrideScanLimit;
-      if (!limitToUse) {
-        limitToUse = scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement;
-      }
-
-      const response = await apiRequest("POST", "/api/metabase/export", {
-        databaseId: selectedDatabaseId,
-        tableId: selectedTableId,
-        filters: Object.values(filters),
-        limit: limitToUse,
-        offset: offsetToUse,
-        scanLimit: limitToUse,
-      });
-      return response.json();
-    },
-    onSuccess: (data, variables) => {
-      if (variables.isLoadMore) {
-        setExportedEntries((prev) => [...prev, ...data.entries]);
-        toast({
-          title: "More rows exported",
-          description: `Added ${data.entries.length.toLocaleString()} rows. Total ready: ${(exportedEntries.length + data.entries.length).toLocaleString()}`,
-        });
-      } else {
-        setExportedEntries(data.entries);
-        setExportedTotal(data.total);
-        setExportDialogOpen(true);
-        toast({
-          title: "Data prepared",
-          description: `Loaded ${data.entries.length.toLocaleString()} rows for export`,
-        });
-      }
-    },
-    onError: (error) => {
-      toast({
-        title: "Fetch failed",
-        description:
-          error instanceof Error ? error.message : "Failed to generate list",
-        variant: "destructive",
-      });
-    },
-  });
-
   useEffect(() => {
     if (selectedDatabaseId && selectedTableId) {
       countMutation.mutate();
     }
-  }, [selectedDatabaseId, selectedTableId, debouncedFilters, scanIncrement]);
+  }, [selectedDatabaseId, selectedTableId, debouncedFilters]);
 
   useEffect(() => {
     if (selectedTableId) {
       setFilters({});
       setFieldOptions({});
-      setExportedEntries([]);
-      setScanIncrement(100000);
-      setIsCustomLimit(false);
     }
   }, [selectedTableId]);
 
@@ -261,7 +188,6 @@ export default function BrainworksFiltering() {
     setSelectedTableId(null);
     setFilters({});
     setFieldOptions({});
-    setExportedEntries([]);
   }, []);
 
   const handleTableChange = useCallback((id: number) => {
@@ -321,7 +247,7 @@ export default function BrainworksFiltering() {
             databaseId: selectedDatabaseId,
             tableId: selectedTableId,
             fieldId,
-            limit: scanIncrement === "all" ? MAX_FETCH_LIMIT : scanIncrement,
+            limit: MAX_FETCH_LIMIT,
           },
         );
         const data = await response.json();
@@ -342,26 +268,12 @@ export default function BrainworksFiltering() {
       fieldOptions,
       loadingFieldOptions,
       toast,
-      scanIncrement,
     ],
   );
 
   const handleExport = useCallback(() => {
-    exportMutation.mutate({ isLoadMore: false });
-  }, [exportMutation]);
-
-  const handleScanNext = useCallback(() => {
-    if (scanIncrement === "all") return;
-
-    // Find the next tier in the array, or just add 100k safely if they used a custom amount
-    const currentIndex = LIMIT_OPTIONS.indexOf(scanIncrement);
-    const nextLimit =
-      currentIndex !== -1 && currentIndex < LIMIT_OPTIONS.length - 1
-        ? LIMIT_OPTIONS[currentIndex + 1]
-        : scanIncrement + 100000;
-
-    setScanIncrement(nextLimit);
-  }, [scanIncrement]);
+    setExportDialogOpen(true);
+  }, []);
 
   const handleRefreshCount = useCallback(() => {
     countMutation.mutate();
@@ -409,10 +321,6 @@ export default function BrainworksFiltering() {
       })
       .filter(Boolean) as MetabaseField[];
   }, [filters, fields]);
-
-  const limitReached =
-    scanIncrement !== "all" &&
-    (countMutation.data?.total || 0) >= scanIncrement;
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -579,148 +487,21 @@ export default function BrainworksFiltering() {
             onRemoveFilter={handleRemoveFilter}
             onClearAll={handleClearAllFilters}
             onExport={handleExport}
-            isExporting={
-              exportMutation.isPending && !exportMutation.variables?.isLoadMore
-            }
+            isExporting={false}
           />
-
-          {/* METABASE-STYLE ROW LIMIT & SCAN CONTROL */}
-          {selectedTableId && (
-            <Card className="shadow-sm border-dashed bg-muted/20">
-              <CardContent className="p-4 flex flex-col gap-4">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <DatabaseIcon className="h-4 w-4 shrink-0" />
-                    <span>Scan Limit</span>
-                  </div>
-
-                  {/* NEW: Custom Limit Input vs Dropdown Toggle */}
-                  <div className="flex items-center gap-2">
-                    {isCustomLimit ? (
-                      <div className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          min="1"
-                          value={customLimitValue}
-                          onChange={(e) => setCustomLimitValue(e.target.value)}
-                          className="h-8 w-[100px] bg-background"
-                          placeholder="e.g. 25000"
-                          autoFocus
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              const val = parseInt(customLimitValue, 10);
-                              if (!isNaN(val) && val > 0) {
-                                setScanIncrement(val);
-                                setIsCustomLimit(false);
-                              }
-                            }
-                          }}
-                        />
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-100 dark:hover:bg-green-900"
-                          onClick={() => {
-                            const val = parseInt(customLimitValue, 10);
-                            if (!isNaN(val) && val > 0) {
-                              setScanIncrement(val);
-                              setIsCustomLimit(false);
-                            }
-                          }}
-                        >
-                          <Check className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 text-muted-foreground"
-                          onClick={() => setIsCustomLimit(false)}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <Select
-                        value={scanIncrement.toString()}
-                        onValueChange={(val) => {
-                          if (val === "custom") {
-                            setIsCustomLimit(true);
-                            setCustomLimitValue(
-                              scanIncrement === "all"
-                                ? ""
-                                : scanIncrement.toString(),
-                            );
-                          } else {
-                            setScanIncrement(
-                              val === "all" ? "all" : Number(val),
-                            );
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-8 w-[130px] bg-background">
-                          <SelectValue placeholder="Amount" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {LIMIT_OPTIONS.map((opt) => (
-                            <SelectItem key={opt} value={opt.toString()}>
-                              {opt.toLocaleString()} rows
-                            </SelectItem>
-                          ))}
-
-                          {/* Display the active custom limit in the list if it's not a standard preset */}
-                          {!LIMIT_OPTIONS.includes(scanIncrement as number) &&
-                            scanIncrement !== "all" && (
-                              <SelectItem value={scanIncrement.toString()}>
-                                {scanIncrement.toLocaleString()} rows
-                              </SelectItem>
-                            )}
-
-                          <SelectItem value="all">All Rows</SelectItem>
-                          <SelectItem
-                            value="custom"
-                            className="text-primary font-medium"
-                          >
-                            Custom amount...
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </div>
-                </div>
-
-                {limitReached && (
-                  <Button
-                    variant="secondary"
-                    className="w-full bg-secondary/50 hover:bg-secondary"
-                    onClick={handleScanNext}
-                    disabled={countMutation.isPending}
-                  >
-                    {countMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                    ) : (
-                      <ArrowDownCircle className="h-4 w-4 mr-2" />
-                    )}
-                    Scan next rows
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {exportedEntries.length > 0 && (
-            <div className="text-xs text-center text-muted-foreground">
-              Currently prepared: {exportedEntries.length.toLocaleString()} rows
-            </div>
-          )}
         </div>
       </div>
 
-      <ExportDialog
-        open={exportDialogOpen}
-        onOpenChange={setExportDialogOpen}
-        entries={exportedEntries}
-        total={exportedTotal}
-      />
+      {selectedDatabaseId && selectedTableId && (
+        <ExportDialog
+          open={exportDialogOpen}
+          onOpenChange={setExportDialogOpen}
+          databaseId={selectedDatabaseId}
+          tableId={selectedTableId}
+          filters={Object.values(filters)}
+          totalCount={countMutation.data?.count ?? 0}
+        />
+      )}
     </div>
   );
 }

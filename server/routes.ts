@@ -12,7 +12,10 @@ import {
   runRawQuery,
   getMarketingPreviewV2,
   runMarketingExportAndLogV2,
+  getExportMappingV2,
   getTableRowCountsFast,
+  getTableData,
+  getSegmentMatchCounts,
 } from "./metabase";
 import {
   countQuerySchema,
@@ -81,7 +84,8 @@ export async function registerRoutes(
 
         const result: Record<string, number> = {};
         for (const table of tables) {
-          result[String(table.id)] = fastCounts[table.name] ?? table.row_count ?? 0;
+          result[String(table.id)] =
+            fastCounts[table.name] ?? table.row_count ?? 0;
         }
         res.json(result);
       } catch (error) {
@@ -240,7 +244,7 @@ export async function registerRoutes(
         filters as any,
         limit,
         offset,
-        scanLimit, // Pass the scan limit
+        scanLimit,
       );
       res.json(result);
     } catch (error) {
@@ -250,6 +254,33 @@ export async function registerRoutes(
           error instanceof Error
             ? error.message
             : "Failed to export mailing list",
+      });
+    }
+  });
+
+  app.post("/api/metabase/table-data", async (req, res) => {
+    try {
+      const { databaseId, tableId, filters, limit, offset, scanLimit } =
+        req.body;
+      if (!databaseId || !tableId) {
+        return res
+          .status(400)
+          .json({ error: "databaseId and tableId are required" });
+      }
+      const result = await getTableData(
+        databaseId,
+        tableId,
+        filters || [],
+        limit || 1000,
+        offset || 0,
+        scanLimit || 100000,
+      );
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching table data:", error);
+      res.status(500).json({
+        error:
+          error instanceof Error ? error.message : "Failed to fetch table data",
       });
     }
   });
@@ -269,13 +300,61 @@ export async function registerRoutes(
         });
       }
 
-      const { concept, masterTableId } = parsed.data;
+      const { concept, databaseId, masterTableId } = parsed.data;
 
-      // Fetch the fields from the Master Table (T1) so the AI knows what to target
-      const fields = await getFields(masterTableId);
-      const analysis = await analyzeMarketingConcept(concept, fields);
+      // Fetch fields and master table name in parallel
+      const [fields, masterTables] = await Promise.all([
+        getFields(masterTableId),
+        getTables(databaseId),
+      ]);
+      const masterTable = masterTables.find((t) => t.id === masterTableId);
+      const masterTableName = masterTable?.name || String(masterTableId);
 
-      res.json(analysis);
+      // Fetch sample distinct values for categorical fields so the AI only suggests real values
+      const categoricalFields = fields.filter(
+        (f) =>
+          f.base_type === "type/Text" ||
+          f.semantic_type === "type/Category" ||
+          f.base_type === "type/Boolean",
+      );
+      const fieldSampleValues: Record<string, string[]> = {};
+      await Promise.all(
+        categoricalFields.slice(0, 15).map(async (f) => {
+          try {
+            const options = await getFieldOptions(
+              databaseId,
+              masterTableId,
+              f.id,
+            );
+            if (options.length > 0) {
+              fieldSampleValues[f.name] = options
+                .slice(0, 20)
+                .map((o) => o.value);
+            }
+          } catch {
+            // Non-fatal — skip if can't fetch values for this field
+          }
+        }),
+      );
+
+      // Use the richer V2 function that understands table context + domain vocabulary
+      const analysis = await analyzeMarketingConceptMasterTable(
+        concept,
+        fields,
+        masterTableName,
+        null, // history table fields — system handles exclusions separately
+        null,
+        fieldSampleValues,
+      );
+
+      // Run per-segment COUNT(*) queries in parallel so the UI can show match counts per rule
+      const matchCounts = await getSegmentMatchCounts(
+        databaseId,
+        masterTableName,
+        analysis.suggestions.map((s) => s.segment),
+      );
+
+      res.json({ ...analysis, matchCounts });
     } catch (error) {
       console.error("Error analyzing concept v2:", error);
       res.status(500).json({
@@ -319,6 +398,36 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/ai/export-mapping-v2", async (req, res) => {
+    try {
+      const {
+        databaseId,
+        masterTableId,
+        historyDbId,
+        historyTableId,
+        segments,
+      } = req.body;
+
+      const mapping = await getExportMappingV2(
+        databaseId,
+        masterTableId,
+        historyDbId || null,
+        historyTableId || null,
+        segments || [],
+      );
+
+      res.json(mapping);
+    } catch (error) {
+      console.error("Error building export mapping v2:", error);
+      res.status(500).json({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to build export mapping",
+      });
+    }
+  });
+
   app.post("/api/ai/export-v2", async (req, res) => {
     try {
       const {
@@ -339,7 +448,9 @@ export async function registerRoutes(
       }
 
       const sanitizedCampaignCode = campaignCode
-        ? String(campaignCode).replace(/[^a-zA-Z0-9_\-]/g, "").substring(0, 50)
+        ? String(campaignCode)
+            .replace(/[^a-zA-Z0-9_\-]/g, "")
+            .substring(0, 50)
         : "";
 
       const csvString = await runMarketingExportAndLogV2(

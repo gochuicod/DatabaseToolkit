@@ -1,4 +1,12 @@
-import { Download, Copy, Check, Mail, Loader2, ShieldCheck, Columns3 } from "lucide-react";
+import {
+  Download,
+  Copy,
+  Check,
+  Mail,
+  Loader2,
+  ShieldCheck,
+  Columns3,
+} from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import {
   Dialog,
@@ -35,7 +43,12 @@ export function CampaignExportDialog({
 }: CampaignExportDialogProps) {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollInfo, setScrollInfo] = useState({ left: 0, top: 0, atEnd: false, atBottom: false });
+  const [scrollInfo, setScrollInfo] = useState({
+    left: 0,
+    top: 0,
+    atEnd: false,
+    atBottom: false,
+  });
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -88,7 +101,8 @@ export function CampaignExportDialog({
             <DialogDescription asChild>
               <div className="flex items-center gap-3 flex-wrap text-sm pt-1">
                 <span className="font-medium text-foreground">
-                  {totalCount.toLocaleString()} contact{totalCount !== 1 ? "s" : ""}
+                  {totalCount.toLocaleString()} contact
+                  {totalCount !== 1 ? "s" : ""}
                 </span>
                 <span className="text-muted-foreground flex items-center gap-1">
                   <Columns3 className="h-3.5 w-3.5" />
@@ -151,7 +165,9 @@ export function CampaignExportDialog({
                           className="px-3 py-2 whitespace-nowrap max-w-[280px] truncate"
                           title={val}
                         >
-                          {val || <span className="text-muted-foreground/40">-</span>}
+                          {val || (
+                            <span className="text-muted-foreground/40">-</span>
+                          )}
                         </td>
                       );
                     })}

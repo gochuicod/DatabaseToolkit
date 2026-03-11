@@ -143,7 +143,7 @@ export function ResultsPanel({
             ) : (
               <>
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
-                Generate Mailing List
+                View & Export Data
               </>
             )}
           </Button>
