@@ -275,9 +275,11 @@ When a campaign concept mentions "fortune", "luck", "astrology", "spiritual", "e
 
 CRITICAL RULES:
 1. ONLY suggest field names that appear in the field list below — never invent field names
-2. ONLY suggest values that appear in the "known values" list for that field — never invent values
+2. ONLY suggest values that appear in the "known values" list for that field — never invent values. Use the EXACT value string from the known values list (e.g., if gender known values are "M  ", "F  ", use "M  " not "Male" or "M").
 3. If you cannot find a matching field for a concept, say so in the reasoning instead of hallucinating a field name
 4. Use format "field_name:value" (no table prefix) — the field_name must EXACTLY match the database field name shown in parentheses
+5. For numeric comparisons (age, LTV, etc.), use operators in the value: "field_name:>=40" or "field_name:>0" — supported operators are >=, <=, >, <, !=
+6. When the campaign says "aged X and above", output "age:>=X" (NOT "age:X"). When it says "high value buyers", output an LTV field with ">0".
 ${domainGlossary}${galaxySchemaHints}
 T1: MASTER EMAIL LIST TABLE: ${masterTableName}
 This table contains the primary contact data with these fields (ONLY use these field names):
@@ -624,6 +626,97 @@ Generate 5-10 example results with appropriate column names.`;
       results: [],
       summary:
         "Failed to parse AI response. Please try again with a different prompt.",
+    };
+  }
+}
+
+// ── AI SQL Analysis for Data Filter tool ─────────────────────────────
+
+export interface SQLAnalysisResult {
+  sql: string;
+  explanation: string;
+  chartConfig: {
+    type: "bar" | "line" | "pie" | "table_only";
+    xKey: string;
+    yKey: string;
+    title: string;
+  } | null;
+}
+
+export async function generateAnalysisSQL(
+  prompt: string,
+  allTables: Array<{
+    name: string;
+    display_name: string;
+    fields: Array<{ name: string; display_name: string; base_type: string }>;
+  }>,
+  primaryTableName: string,
+): Promise<SQLAnalysisResult> {
+  const tableDescriptions = allTables
+    .map((table) => {
+      const fieldList = table.fields
+        .map(
+          (f) =>
+            `    - [${f.name}] (${f.display_name}): ${f.base_type.replace("type/", "")}`,
+        )
+        .join("\n");
+      const marker = table.name === primaryTableName ? " ← SELECTED TABLE" : "";
+      return `TABLE: [${table.name}]${marker}\n${fieldList}`;
+    })
+    .join("\n\n");
+
+  const systemPrompt = `You are a SQL Server analyst. The user will describe an analysis in natural language. Generate a T-SQL query that answers their question.
+
+DATABASE SCHEMA (all tables in the same database):
+${tableDescriptions}
+
+RULES:
+1. Write valid T-SQL (Microsoft SQL Server syntax)
+2. Always use bracket notation for table/column names: [table_name], [column_name]
+3. The user has selected [${primaryTableName}] as their primary table. Focus queries on this table, but JOIN other tables when the question requires it.
+4. For JOINs, infer relationships from matching column names across tables (e.g., same ID columns)
+5. Limit results to at most 100 rows unless the user asks for more
+6. Use TOP, GROUP BY, ORDER BY, aggregate functions as needed
+7. Do NOT use CTEs or temp tables — keep it to a single SELECT statement
+8. Do NOT include any DDL (CREATE, ALTER, DROP) or DML (INSERT, UPDATE, DELETE) statements
+9. If the question cannot be answered with the available fields, explain why in the "explanation" field and provide the closest possible query
+
+Also suggest a chart configuration if the results would benefit from visualization.
+
+Respond with JSON:
+{
+  "sql": "SELECT ... FROM [table] ...",
+  "explanation": "Brief explanation of what this query does and what insights it provides",
+  "chartConfig": {
+    "type": "bar" | "line" | "pie" | "table_only",
+    "xKey": "column_name_for_x_axis",
+    "yKey": "column_name_for_y_axis",
+    "title": "Chart title"
+  }
+}
+
+Set chartConfig to null if the result is best viewed as a table only (e.g., detail rows, text-heavy results).
+Use "bar" for categorical comparisons, "line" for time series, "pie" for proportions with few categories.`;
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0.3,
+  });
+
+  const content = response.choices[0]?.message?.content || "{}";
+  try {
+    return JSON.parse(content);
+  } catch {
+    return {
+      sql: "",
+      explanation:
+        "Failed to parse AI response. Please try a different prompt.",
+      chartConfig: null,
     };
   }
 }

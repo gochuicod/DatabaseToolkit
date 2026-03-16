@@ -2,34 +2,24 @@ import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Mail,
-  Sparkles,
-  Send,
   Download,
   Loader2,
-  Users,
-  Database,
   ShieldCheck,
   AlertCircle,
-  CheckCircle2,
   Eye,
   TriangleAlert,
+  Sparkles,
+  Users,
+  ShieldOff,
 } from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -37,36 +27,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { CampaignExportDialog } from "@/components/campaign-export-dialog";
-import type { MetabaseDatabase, MetabaseTable } from "@shared/schema";
+import type {
+  MetabaseDatabase,
+  MetabaseTable,
+  MetabaseField,
+} from "@shared/schema";
 
 interface SegmentSuggestion {
   segment: string;
   confidence: number;
   reasoning: string;
-}
-
-function parseSegmentFormat(segment: string): {
-  tableName: string | null;
-  fieldName: string;
-  value: string;
-} {
-  const colonIndex = segment.indexOf(":");
-  if (colonIndex === -1)
-    return { tableName: null, fieldName: segment, value: "" };
-  const fieldPart = segment.substring(0, colonIndex);
-  const valuePart = segment.substring(colonIndex + 1);
-  const dotIndex = fieldPart.indexOf(".");
-  if (dotIndex !== -1) {
-    return {
-      tableName: fieldPart.substring(0, dotIndex),
-      fieldName: fieldPart.substring(dotIndex + 1),
-      value: valuePart,
-    };
-  }
-  return { tableName: null, fieldName: fieldPart, value: valuePart };
 }
 
 interface AIAnalysisResponse {
@@ -91,6 +65,11 @@ interface PreviewResponse {
   totalCandidates: number;
   historyTableUsed: boolean;
   filterWarning?: string | null;
+  emailColumn: string | null;
+  emailFilterApplied: boolean;
+  totalWithEmail?: number;
+  exactMatchCount?: number;
+  relaxedCount?: number;
 }
 
 interface ExportMappingResponse {
@@ -142,12 +121,16 @@ export default function EmailMarketing() {
     null,
   );
 
+  // Email filter is always on — this is an email marketing tool
+  const filterEmailsOnly = true;
+
   // State: Campaign Settings
   const [campaignCode, setCampaignCode] = useState("");
   const [concept, setConcept] = useState("");
   const [birthdayFilter, setBirthdayFilter] = useState("");
   const [excludeDays, setExcludeDays] = useState("7");
   const [contactCap, setContactCap] = useState("10000");
+  const [applySuppression, setApplySuppression] = useState(true);
 
   // State: Results
   const [selectedSegments, setSelectedSegments] = useState<string[]>([]);
@@ -170,9 +153,17 @@ export default function EmailMarketing() {
   // 2. Auto-detect Global Suppression DB & Table
   useEffect(() => {
     if (databases) {
-      const suppDb = databases.find((db) =>
-        db.name.toLowerCase().includes("marketing_global_suppression"),
-      );
+      const normalizedSearch = (name: string) =>
+        name.toLowerCase().replace(/[\s_-]+/g, " ").trim();
+      const suppDb =
+        databases.find((db) =>
+          normalizedSearch(db.name).includes(
+            "marketing global suppression",
+          ),
+        ) ||
+        databases.find((db) =>
+          normalizedSearch(db.name).includes("suppression"),
+        );
       if (suppDb) setSuppressionDbId(suppDb.id);
     }
   }, [databases]);
@@ -220,48 +211,26 @@ export default function EmailMarketing() {
   }, [selectedDatabaseId, tables]);
 
   // Mutations
-  const analysisMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/ai/analyze-concept-v2", {
-        concept,
-        databaseId: selectedDatabaseId,
-        masterTableId: selectedMasterTableId,
-        historyDbId: suppressionDbId,
-        historyTableId: suppressionTableId,
-        campaignCode,
-        birthdayFilter,
-        excludeDays: parseInt(excludeDays) || 7,
-        contactCap: parseInt(contactCap) || 5000,
-      });
-      return response.json();
-    },
-    onSuccess: (data: AIAnalysisResponse) => {
-      setAnalysisResult(data);
-      // Do NOT auto-select segments — let user consciously choose which rules to apply
-      // This gives control to deselect rules with 0 matches and respects their contactCap choice
-      setSelectedSegments([]);
-    },
-    onError: (error) =>
-      toast({
-        title: "Analysis failed",
-        description: error.message,
-        variant: "destructive",
-      }),
-  });
-
   const previewMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (vars?: {
+      segments?: string[];
+      ageRange?: string | null;
+    }) => {
       const response = await apiRequest("POST", "/api/ai/preview-v2", {
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-        historyDbId: suppressionDbId,
-        historyTableId: suppressionTableId,
+        historyDbId: applySuppression ? suppressionDbId : null,
+        historyTableId: applySuppression ? suppressionTableId : null,
         campaignCode,
-        segments: selectedSegments,
-        ageRange: analysisResult?.suggestedAgeRange,
+        segments: vars?.segments ?? selectedSegments,
+        ageRange:
+          vars?.ageRange !== undefined
+            ? vars.ageRange
+            : analysisResult?.suggestedAgeRange,
         birthdayFilter,
         excludeDays: parseInt(excludeDays) || 7,
         contactCap: parseInt(contactCap) || 5000,
+        filterEmailsOnly,
       });
       return response.json();
     },
@@ -279,8 +248,8 @@ export default function EmailMarketing() {
       const response = await apiRequest("POST", "/api/ai/export-mapping-v2", {
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-        historyDbId: suppressionDbId,
-        historyTableId: suppressionTableId,
+        historyDbId: applySuppression ? suppressionDbId : null,
+        historyTableId: applySuppression ? suppressionTableId : null,
         segments: selectedSegments,
       });
       return response.json();
@@ -294,14 +263,15 @@ export default function EmailMarketing() {
       const response = await apiRequest("POST", "/api/ai/export-v2", {
         databaseId: selectedDatabaseId,
         masterTableId: selectedMasterTableId,
-        historyDbId: suppressionDbId,
-        historyTableId: suppressionTableId,
+        historyDbId: applySuppression ? suppressionDbId : null,
+        historyTableId: applySuppression ? suppressionTableId : null,
         campaignCode,
         segments: selectedSegments,
         ageRange: analysisResult?.suggestedAgeRange,
         birthdayFilter,
         excludeDays: parseInt(excludeDays) || 7,
         contactCap: parseInt(contactCap) || 5000,
+        filterEmailsOnly,
       });
       return response.blob();
     },
@@ -315,7 +285,9 @@ export default function EmailMarketing() {
       setExportDialogOpen(false);
       toast({
         title: "Success",
-        description: "Export complete and logged to suppression history.",
+        description: applySuppression
+          ? "Export complete and logged to suppression history."
+          : "Export complete (suppression skipped).",
       });
       setConcept("");
       setCampaignCode("");
@@ -326,6 +298,7 @@ export default function EmailMarketing() {
       setBirthdayFilter("");
       setExcludeDays("7");
       setContactCap("10000");
+      setApplySuppression(true);
     },
     onError: (error) =>
       toast({
@@ -335,41 +308,74 @@ export default function EmailMarketing() {
       }),
   });
 
-  const handleAnalyze = () => {
+  const directPreviewMutation = useMutation({
+    mutationFn: async () => {
+      if (!concept.trim()) {
+        return { segments: [], ageRange: null, analysisData: null };
+      }
+      const response = await apiRequest("POST", "/api/ai/analyze-concept-v2", {
+        concept,
+        databaseId: selectedDatabaseId,
+        masterTableId: selectedMasterTableId,
+        historyDbId: applySuppression ? suppressionDbId : null,
+        historyTableId: applySuppression ? suppressionTableId : null,
+        campaignCode,
+        birthdayFilter,
+        excludeDays: parseInt(excludeDays) || 7,
+        contactCap: parseInt(contactCap) || 5000,
+      });
+      const data = (await response.json()) as AIAnalysisResponse;
+      const validSegments = data.suggestions
+        .filter((s) => {
+          const count = data.matchCounts?.[s.segment];
+          return count === undefined || count > 0;
+        })
+        .map((s) => s.segment);
+      return {
+        segments: validSegments,
+        ageRange: data.suggestedAgeRange,
+        analysisData: data,
+      };
+    },
+    onSuccess: async (result) => {
+      setAnalysisResult(null);
+      setSelectedSegments(result.segments);
+      previewMutation.mutate({
+        segments: result.segments,
+        ageRange: result.ageRange,
+      });
+    },
+    onError: (error) =>
+      toast({
+        title: "Preview failed",
+        description: error.message,
+        variant: "destructive",
+      }),
+  });
+
+  const handleDirectPreview = () => {
     if (!selectedDatabaseId || !selectedMasterTableId)
       return toast({
         title: "Missing target",
         description: "Select an audience source.",
         variant: "destructive",
       });
-    if (!concept.trim())
-      return toast({
-        title: "Missing concept",
-        description: "Enter a campaign description.",
-        variant: "destructive",
-      });
-    analysisMutation.mutate();
+    directPreviewMutation.mutate();
   };
 
-  // Auto-trigger preview when user selects segments or changes constraints
+  // Auto-trigger preview when constraints change after initial preview
   useEffect(() => {
     if (
-      selectedSegments.length > 0 &&
+      previewResult &&
       selectedDatabaseId &&
       selectedMasterTableId &&
-      !previewMutation.isPending
+      !previewMutation.isPending &&
+      !directPreviewMutation.isPending
     ) {
       const timer = setTimeout(() => previewMutation.mutate(), 500);
       return () => clearTimeout(timer);
     }
-  }, [
-    selectedSegments,
-    selectedDatabaseId,
-    selectedMasterTableId,
-    contactCap,
-    excludeDays,
-    birthdayFilter,
-  ]);
+  }, [contactCap, excludeDays, birthdayFilter, applySuppression]);
 
   useEffect(() => {
     if (
@@ -392,69 +398,84 @@ export default function EmailMarketing() {
     selectedSegments,
   ]);
 
-  const exportBlockedByMapping =
-    !!suppressionTableId &&
-    (mappingMutation.isPending || !exportMapping || !exportMapping.ready);
+  const isProcessing =
+    directPreviewMutation.isPending || previewMutation.isPending;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-8 font-sans">
-      {/* Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="p-6 max-w-5xl mx-auto space-y-6 font-sans">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-primary/10 text-primary rounded-xl">
-            <Mail className="h-6 w-6" />
+          <div className="p-2 bg-primary/10 text-primary rounded-lg">
+            <Mail className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
+            <h1 className="text-xl font-semibold tracking-tight">
               Campaign Builder
             </h1>
-            <p className="text-sm text-muted-foreground">
-              Define your audience and generate intelligent mailing lists.
+            <p className="text-xs text-muted-foreground">
+              Build and export targeted mailing lists
             </p>
           </div>
         </div>
-
-        {/* Dynamic Suppression Badge */}
-        <div className="flex items-center bg-background border shadow-sm rounded-full px-4 py-1.5 text-sm font-medium">
-          {suppressionTableId ? (
+        <div className="flex items-center bg-background border rounded-full px-3 py-1 text-xs font-medium shrink-0">
+          {suppressionTableId && !applySuppression ? (
+            <span className="flex items-center text-amber-600 dark:text-amber-400">
+              <ShieldOff className="w-3.5 h-3.5 mr-1.5" /> Suppression Off
+            </span>
+          ) : suppressionTableId ? (
             <span className="flex items-center text-emerald-600 dark:text-emerald-400">
-              <ShieldCheck className="w-4 h-4 mr-2" /> Global Suppression Active
+              <ShieldCheck className="w-3.5 h-3.5 mr-1.5" /> Suppression Active
+            </span>
+          ) : suppressionDbId ? (
+            <span className="flex items-center text-amber-600 dark:text-amber-400">
+              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />{" "}
+              Connecting...
+            </span>
+          ) : databases && !isLoadingDatabases ? (
+            <span className="flex items-center text-muted-foreground">
+              <ShieldOff className="w-3.5 h-3.5 mr-1.5" /> No Suppression DB
             </span>
           ) : (
             <span className="flex items-center text-amber-600 dark:text-amber-400">
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Locating
-              Suppression List...
+              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Loading...
             </span>
           )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Column: Form Setup */}
-        <div className="lg:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Left Column */}
+        <div className="lg:col-span-2 space-y-4">
           {/* Step 1: Audience Source */}
-          <Card className="shadow-sm border-muted/60">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+          <Card>
+            <CardHeader className="pb-2 pt-4 px-5">
+              <CardTitle className="text-sm flex items-center gap-2 font-medium">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold">
                   1
                 </span>
                 Audience Source
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Target Database
+            <CardContent className="px-5 pb-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Database
                   </Label>
                   <Select
                     value={selectedDatabaseId?.toString() || ""}
                     onValueChange={(v) => setSelectedDatabaseId(parseInt(v))}
                     disabled={isLoadingDatabases}
                   >
-                    <SelectTrigger className="bg-muted/30">
-                      <SelectValue placeholder="Select Database..." />
+                    <SelectTrigger className="h-9">
+                      <SelectValue
+                        placeholder={
+                          isLoadingDatabases
+                            ? "Loading..."
+                            : "Select database..."
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
                       {databases
@@ -467,17 +488,25 @@ export default function EmailMarketing() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Master Audience Table
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Table
                   </Label>
                   <Select
                     value={selectedMasterTableId?.toString() || ""}
                     onValueChange={(v) => setSelectedMasterTableId(parseInt(v))}
                     disabled={isLoadingTables || !selectedDatabaseId}
                   >
-                    <SelectTrigger className="bg-muted/30">
-                      <SelectValue placeholder="Select Table..." />
+                    <SelectTrigger className="h-9">
+                      <SelectValue
+                        placeholder={
+                          !selectedDatabaseId
+                            ? "Select database first"
+                            : isLoadingTables
+                              ? "Loading..."
+                              : "Select table..."
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
                       {tables?.map((table) => (
@@ -492,22 +521,25 @@ export default function EmailMarketing() {
             </CardContent>
           </Card>
 
-          {/* Step 2: Campaign Definition */}
-          <Card className="shadow-sm border-muted/60">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                    2
-                  </span>
-                  Campaign Definition
-                </div>
+          {/* Step 2: Campaign Details */}
+          <Card
+            className={`transition-opacity duration-200 ${!selectedMasterTableId ? "opacity-40 pointer-events-none" : ""}`}
+          >
+            <CardHeader className="pb-2 pt-4 px-5">
+              <CardTitle className="text-sm flex items-center gap-2 font-medium">
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${selectedMasterTableId ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+                >
+                  2
+                </span>
+                Campaign Details
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                <div className="space-y-1.5 md:col-span-1">
-                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            <CardContent className="px-5 pb-5 space-y-4">
+              {/* Campaign Code + Concept side by side */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="space-y-1 sm:w-[140px] shrink-0">
+                  <Label className="text-[11px] text-muted-foreground">
                     Campaign Code
                   </Label>
                   <Input
@@ -516,474 +548,271 @@ export default function EmailMarketing() {
                     onChange={(e) =>
                       setCampaignCode(e.target.value.toUpperCase())
                     }
-                    className="font-mono bg-muted/30"
+                    className="font-mono h-9"
                   />
                 </div>
-                <div className="space-y-1.5 md:col-span-2">
-                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Campaign Concept
+                <div className="space-y-1 flex-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Campaign Concept{" "}
+                    <span className="text-muted-foreground/40">(optional)</span>
                   </Label>
                   <Textarea
-                    placeholder="Describe the campaign target (e.g. 'Luxury travel deals for older demographics...')"
+                    placeholder="Describe your target audience, e.g. 'High-value customers over 50 in Tokyo interested in luxury travel'"
                     value={concept}
                     onChange={(e) => setConcept(e.target.value)}
-                    className="resize-none min-h-[80px] bg-muted/30"
+                    className="resize-none min-h-[72px] text-sm"
                   />
                 </div>
               </div>
 
-              <div className="pt-2">
-                <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 block">
-                  Constraints & Limits
-                </Label>
-                <div className="flex flex-wrap gap-4 p-4 rounded-lg border bg-muted/10">
-                  <div className="flex-1 min-w-[140px] space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      Max Contacts
-                    </Label>
-                    <Input
-                      type="number"
-                      min="1"
-                      value={contactCap}
-                      onChange={(e) => setContactCap(e.target.value)}
-                      className="bg-white dark:bg-zinc-950"
-                    />
-                  </div>
-                  <div className="flex-1 min-w-[140px] space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      Exclude Mailed Within (Days)
-                    </Label>
+              {/* Constraints row */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Max Contacts
+                  </Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={contactCap}
+                    onChange={(e) => setContactCap(e.target.value)}
+                    className="h-9"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Birthday Filter
+                  </Label>
+                  <Input
+                    placeholder="e.g. next month"
+                    value={birthdayFilter}
+                    onChange={(e) => setBirthdayFilter(e.target.value)}
+                    className="h-9"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-muted-foreground">
+                    Exclude Recently Mailed
+                  </Label>
+                  <div className="relative">
                     <Input
                       type="number"
                       min="0"
                       value={excludeDays}
                       onChange={(e) => setExcludeDays(e.target.value)}
-                      disabled={!suppressionTableId}
-                      className="bg-white dark:bg-zinc-950"
+                      disabled={!suppressionTableId || !applySuppression}
+                      className="h-9 pr-11"
                     />
-                  </div>
-                  <div className="flex-1 min-w-[140px] space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      Birthday Filter (Optional)
-                    </Label>
-                    <Input
-                      placeholder="e.g. next month"
-                      value={birthdayFilter}
-                      onChange={(e) => setBirthdayFilter(e.target.value)}
-                      className="bg-white dark:bg-zinc-950"
-                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none">
+                      days
+                    </span>
                   </div>
                 </div>
               </div>
 
-              <Button
-                onClick={handleAnalyze}
-                disabled={
-                  analysisMutation.isPending ||
-                  !concept.trim() ||
-                  !selectedMasterTableId
-                }
-                className="w-full mt-2"
-                size="lg"
+              {/* Suppression toggle — inline bar */}
+              <div
+                className={`flex items-center justify-between rounded-lg border px-4 py-2.5 ${applySuppression ? "bg-emerald-50/50 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900" : "bg-muted/30 border-border"}`}
               >
-                {analysisMutation.isPending ? (
+                <div className="flex items-center gap-2">
+                  {applySuppression ? (
+                    <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <ShieldOff className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <div>
+                    <span
+                      className={`text-xs font-medium ${applySuppression ? "text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}`}
+                    >
+                      {applySuppression
+                        ? "Suppression active"
+                        : "Suppression disabled"}
+                    </span>
+                    <p className="text-[10px] text-muted-foreground leading-tight">
+                      {applySuppression
+                        ? "Previously mailed contacts will be excluded"
+                        : "All contacts included, including previously mailed"}
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={applySuppression}
+                  onCheckedChange={setApplySuppression}
+                  disabled={!suppressionTableId}
+                />
+              </div>
+
+              {/* Action Button */}
+              <Button
+                onClick={handleDirectPreview}
+                disabled={isProcessing || !selectedMasterTableId}
+                className="w-full"
+                size="lg"
+                data-testid="button-direct-preview"
+              >
+                {directPreviewMutation.isPending ? (
                   <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />{" "}
-                    Analyzing...
+                    <Sparkles className="h-4 w-4 mr-2 animate-pulse" />
+                    Analyzing campaign...
+                  </>
+                ) : previewMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Building mailing list...
                   </>
                 ) : (
                   <>
-                    <Sparkles className="h-4 w-4 mr-2" /> Generate Targeting
-                    Logic
+                    <Eye className="h-4 w-4 mr-2" /> Preview & Export
                   </>
                 )}
               </Button>
             </CardContent>
           </Card>
-
-          {/* AI Suggestions (Appears after analysis) */}
-          {analysisResult && (
-            <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4">
-              <div className="flex items-center justify-between px-1">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                  AI Targeting Rules
-                </h3>
-                {previewMutation.isPending && (
-                  <div className="flex items-center gap-1.5 text-xs text-primary animate-pulse">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Applying filters...
-                  </div>
-                )}
-              </div>
-              <div
-                className={`grid grid-cols-1 sm:grid-cols-2 gap-3 transition-opacity duration-200 ${previewMutation.isPending ? "opacity-60 pointer-events-none" : ""}`}
-              >
-                {analysisResult.suggestions.map((suggestion) => {
-                  const parsed = parseSegmentFormat(suggestion.segment);
-                  const isSelected = selectedSegments.includes(
-                    suggestion.segment,
-                  );
-                  const matchCount =
-                    analysisResult.matchCounts?.[suggestion.segment];
-                  const hasNoMatches = matchCount === 0;
-                  const hasFieldError = matchCount === -1;
-                  return (
-                    <div
-                      key={suggestion.segment}
-                      onClick={() =>
-                        setSelectedSegments((prev) =>
-                          isSelected
-                            ? prev.filter((s) => s !== suggestion.segment)
-                            : [...prev, suggestion.segment],
-                        )
-                      }
-                      className={`relative flex flex-col p-4 rounded-xl border cursor-pointer transition-all ${
-                        hasNoMatches || hasFieldError
-                          ? "border-amber-400 bg-amber-50/40 dark:bg-amber-950/20 opacity-75"
-                          : isSelected
-                            ? "border-primary bg-primary/5 shadow-sm"
-                            : "border-border bg-card hover:border-primary/40"
-                      }`}
-                      data-testid={`targeting-rule-${parsed.fieldName}`}
-                    >
-                      <Checkbox
-                        checked={isSelected}
-                        className="absolute top-4 right-4"
-                      />
-                      <div className="pr-6">
-                        <div className="font-mono text-sm font-medium mb-1">
-                          <span className="text-primary">
-                            {parsed.fieldName}
-                          </span>{" "}
-                          ={" "}
-                          <span className="text-amber-600 dark:text-amber-400">
-                            "{parsed.value || suggestion.segment}"
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground leading-relaxed">
-                          {suggestion.reasoning}
-                        </p>
-                        {matchCount !== undefined && (
-                          <div className="mt-2">
-                            {hasFieldError ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-                                <TriangleAlert className="h-3 w-3" />
-                                Field not found in this table
-                              </span>
-                            ) : hasNoMatches ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-                                <TriangleAlert className="h-3 w-3" />0 matches
-                                in this table
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                                <CheckCircle2 className="h-3 w-3" />
-                                {matchCount.toLocaleString()} matches
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Right Column: Preview & Export */}
-        <div className="space-y-6">
-          <Card className="shadow-sm border-muted/60 sticky top-6">
-            <CardHeader className="pb-4 border-b bg-muted/10">
-              <CardTitle className="text-lg flex items-center gap-2">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+        {/* Right Column: Results */}
+        <div>
+          <Card
+            className={`sticky top-6 transition-all duration-300 ${previewResult ? "ring-1 ring-primary/20" : ""}`}
+          >
+            <CardHeader className="pb-2 pt-4 px-5 border-b bg-muted/10">
+              <CardTitle className="text-sm flex items-center gap-2 font-medium">
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${previewResult ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+                >
                   3
                 </span>
-                Export Details
+                Results
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-6 space-y-6">
-              {!previewResult && !previewMutation.isPending ? (
-                <div className="flex flex-col items-center justify-center py-10 text-center space-y-3 opacity-60">
-                  <Database className="h-10 w-10 text-muted-foreground" />
-                  <p className="text-sm">
-                    Configure your campaign to generate a preview.
+            <CardContent className="pt-5 px-5 pb-5 space-y-4">
+              {!previewResult && !isProcessing ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
+                  <div className="h-12 w-12 rounded-xl bg-muted/60 flex items-center justify-center">
+                    <Users className="h-6 w-6 text-muted-foreground/30" />
+                  </div>
+                  <p className="text-xs text-muted-foreground/60 max-w-[180px] leading-relaxed">
+                    Select a source and click Preview & Export to generate your
+                    list.
                   </p>
                 </div>
-              ) : previewMutation.isPending && !previewResult ? (
-                <div className="flex flex-col items-center justify-center py-10 text-center space-y-4">
+              ) : isProcessing && !previewResult ? (
+                <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
                   <div className="relative">
-                    <div className="h-16 w-16 rounded-full border-4 border-muted" />
-                    <Loader2 className="h-16 w-16 animate-spin text-primary absolute inset-0" />
+                    <div className="h-14 w-14 rounded-full border-4 border-muted" />
+                    <Loader2 className="h-14 w-14 animate-spin text-primary absolute inset-0" />
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     <p className="text-sm font-medium">
-                      Applying targeting filters...
+                      {directPreviewMutation.isPending
+                        ? "Analyzing..."
+                        : "Querying..."}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Querying database with your selected rules
+                      This may take a moment
                     </p>
                   </div>
                 </div>
               ) : previewResult ? (
-                <div className="relative space-y-6 animate-in fade-in">
+                <div className="relative space-y-4 animate-in fade-in">
                   {previewMutation.isPending && (
-                    <div className="absolute inset-0 bg-background/70 backdrop-blur-[1px] z-10 flex flex-col items-center justify-center rounded-lg">
-                      <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
-                      <p className="text-sm font-medium text-foreground">
-                        Updating results...
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Re-applying filters
-                      </p>
+                    <div className="absolute inset-0 bg-background/70 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
+                      <Loader2 className="h-6 w-6 animate-spin text-primary" />
                     </div>
                   )}
 
-                  {/* Zero-results mismatch alert */}
+                  {/* Zero-results alert */}
                   {previewResult.count === 0 && previewResult.filterWarning && (
                     <Alert
                       variant="destructive"
                       className="border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200"
                     >
                       <TriangleAlert className="h-4 w-4 !text-amber-600" />
-                      <AlertTitle className="text-amber-700 dark:text-amber-300 font-semibold">
-                        Campaign concept doesn't fit the selected table
+                      <AlertTitle className="text-amber-700 dark:text-amber-300 font-semibold text-xs">
+                        No matches found
                       </AlertTitle>
-                      <AlertDescription className="text-amber-700 dark:text-amber-400 text-xs leading-relaxed mt-1 space-y-2">
-                        <p>{previewResult.filterWarning}</p>
-                        <p className="font-medium">What to do:</p>
-                        <ul className="list-disc pl-4 space-y-1">
-                          <li>
-                            Check the targeting rules on the left — rules marked
-                            with a warning have 0 matches and can be unchecked.
-                          </li>
-                          <li>
-                            Click <strong>Generate Targeting Logic</strong>{" "}
-                            again to re-analyze with the corrected field values.
-                          </li>
-                          <li>
-                            Try selecting a different table or database that
-                            better matches this campaign type.
-                          </li>
-                        </ul>
+                      <AlertDescription className="text-amber-700 dark:text-amber-400 text-[11px] leading-relaxed mt-1">
+                        {previewResult.filterWarning}
                       </AlertDescription>
                     </Alert>
                   )}
 
-                  {/* Huge Number */}
-                  <div className="text-center space-y-1">
+                  {/* Count */}
+                  <div className="text-center py-1">
                     <div
-                      className={`text-5xl font-bold tracking-tighter transition-opacity duration-300 ${previewMutation.isPending ? "opacity-40" : previewResult.count === 0 ? "text-amber-500" : "text-foreground"}`}
+                      className={`text-4xl font-bold tracking-tighter tabular-nums ${previewResult.count === 0 ? "text-amber-500" : "text-foreground"}`}
                     >
                       {previewResult.count.toLocaleString()}
                     </div>
-                    <div className="text-sm font-medium text-muted-foreground">
-                      Final Contacts Ready
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      contacts ready
                     </div>
                   </div>
 
-                  {/* Stat blocks */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="p-3 rounded-lg bg-muted/40 text-center">
-                      <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">
-                        Matched
+                  {/* Stats */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+                        Exact Match
                       </div>
-                      <div className="text-lg font-semibold">
-                        {previewResult.totalCandidates?.toLocaleString() ||
-                          previewResult.count.toLocaleString()}
+                      <div className="text-base font-semibold tabular-nums mt-0.5">
+                        {(
+                          previewResult.exactMatchCount ??
+                          previewResult.totalCandidates ??
+                          previewResult.count
+                        ).toLocaleString()}
                       </div>
                     </div>
                     <div
-                      className={`p-3 rounded-lg text-center ${previewResult.excludedCount > 0 ? "bg-rose-50 dark:bg-rose-950/30" : "bg-muted/40"}`}
+                      className={`p-2.5 rounded-lg text-center ${previewResult.excludedCount > 0 ? "bg-rose-50 dark:bg-rose-950/30" : "bg-muted/40"}`}
                     >
                       <div
-                        className={`text-xs mb-1 uppercase tracking-wider font-semibold ${previewResult.excludedCount > 0 ? "text-rose-600" : "text-muted-foreground"}`}
+                        className={`text-[10px] uppercase tracking-wider font-semibold ${previewResult.excludedCount > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"}`}
                       >
                         Suppressed
                       </div>
                       <div
-                        className={`text-lg font-semibold ${previewResult.excludedCount > 0 ? "text-rose-600" : ""}`}
+                        className={`text-base font-semibold tabular-nums mt-0.5 ${previewResult.excludedCount > 0 ? "text-rose-600 dark:text-rose-400" : ""}`}
                       >
                         {previewResult.excludedCount.toLocaleString()}
                       </div>
                     </div>
                   </div>
+                  {previewResult.relaxedCount != null &&
+                    previewResult.relaxedCount > 0 && (
+                      <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-900 px-3 py-2">
+                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+                        <p className="text-[11px] text-blue-700 dark:text-blue-300 leading-snug">
+                          <span className="font-semibold">
+                            {previewResult.relaxedCount.toLocaleString()}
+                          </span>{" "}
+                          closely related contacts added to reach your cap
+                          (matching core demographics, broadened from specific
+                          filters)
+                        </p>
+                      </div>
+                    )}
 
                   <Separator />
 
-                  {/* Mapping Diagnostics */}
-                  {(mappingMutation.isPending || exportMapping) && (
-                    <div className="space-y-2">
-                      <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Suppression Mapping Check
-                      </Label>
-                      <div className="rounded-lg border bg-muted/10 p-3 space-y-2">
-                        {mappingMutation.isPending && (
-                          <div className="text-xs text-muted-foreground flex items-center gap-2">
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                            Detecting source/suppression column mapping...
-                          </div>
-                        )}
-
-                        {exportMapping && (
-                          <>
-                            <div className="text-xs flex items-center gap-2">
-                              {exportMapping.ready ? (
-                                <>
-                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                                  <span className="text-emerald-600 font-medium">
-                                    Mapping ready for export logging
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  <TriangleAlert className="h-3.5 w-3.5 text-amber-600" />
-                                  <span className="text-amber-600 font-medium">
-                                    Mapping has issues
-                                  </span>
-                                </>
-                              )}
-                            </div>
-
-                            <div className="text-xs text-muted-foreground space-y-1">
-                              <div>
-                                Source ref:{" "}
-                                <span className="font-mono text-foreground">
-                                  {exportMapping.source.refColumn ||
-                                    "(not detected)"}
-                                </span>
-                              </div>
-                              <div>
-                                Source ref confidence:{" "}
-                                <span className="font-mono text-foreground">
-                                  {exportMapping.source.refConfidence}%
-                                </span>
-                              </div>
-                              <div>
-                                Why source ref:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.source.refReason}
-                                </span>
-                              </div>
-                              <div>
-                                Source system:{" "}
-                                <span className="font-mono text-foreground">
-                                  {exportMapping.source.sourceSystemColumn ||
-                                    "(derived)"}
-                                </span>
-                              </div>
-                              <div>
-                                Source system confidence:{" "}
-                                <span className="font-mono text-foreground">
-                                  {exportMapping.source.sourceSystemConfidence}%
-                                </span>
-                              </div>
-                              <div>
-                                Why source system:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.source.sourceSystemReason}
-                                </span>
-                              </div>
-                              <div>
-                                Suppression ref/code/source/date:{" "}
-                                <span className="font-mono text-foreground">
-                                  {[
-                                    exportMapping.suppression.refColumn,
-                                    exportMapping.suppression
-                                      .campaignCodeColumn,
-                                    exportMapping.suppression
-                                      .sourceSystemColumn,
-                                    exportMapping.suppression.sentDateColumn,
-                                  ]
-                                    .map((v) => v || "?")
-                                    .join(" / ")}
-                                </span>
-                              </div>
-                              <div>
-                                Suppression confidence (ref/code/source/date):{" "}
-                                <span className="font-mono text-foreground">
-                                  {[
-                                    exportMapping.suppression.refConfidence,
-                                    exportMapping.suppression
-                                      .campaignCodeConfidence,
-                                    exportMapping.suppression
-                                      .sourceSystemConfidence,
-                                    exportMapping.suppression
-                                      .sentDateConfidence,
-                                  ]
-                                    .map((v) => `${v}%`)
-                                    .join(" / ")}
-                                </span>
-                              </div>
-                              <div>
-                                Why suppression ref:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.suppression.refReason}
-                                </span>
-                              </div>
-                              <div>
-                                Why suppression code:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.suppression.campaignCodeReason}
-                                </span>
-                              </div>
-                              <div>
-                                Why suppression source:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.suppression.sourceSystemReason}
-                                </span>
-                              </div>
-                              <div>
-                                Why suppression date:{" "}
-                                <span className="text-foreground">
-                                  {exportMapping.suppression.sentDateReason}
-                                </span>
-                              </div>
-                              {exportMapping.source.sourceSystemSample && (
-                                <div>
-                                  Sample source value:{" "}
-                                  <span className="font-mono text-foreground">
-                                    {exportMapping.source.sourceSystemSample}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-
-                            {!exportMapping.ready &&
-                              exportMapping.issues.length > 0 && (
-                                <div className="text-xs text-amber-700 dark:text-amber-300 space-y-1 pt-1">
-                                  {exportMapping.issues
-                                    .slice(0, 3)
-                                    .map((issue, idx) => (
-                                      <div key={idx}>- {issue}</div>
-                                    ))}
-                                </div>
-                              )}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Sample List */}
-                  <div className="space-y-2">
-                    <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      Sample Records
+                  {/* Sample */}
+                  <div className="space-y-1.5">
+                    <Label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      Sample
                     </Label>
-                    <ScrollArea className="h-[160px] rounded-md border bg-muted/10">
-                      <div className="p-2 space-y-1">
+                    <ScrollArea className="h-[120px] rounded-md border bg-muted/10">
+                      <div className="p-1 space-y-0.5">
                         {previewResult.sample
-                          .slice(0, 10)
+                          .slice(0, 8)
                           .map((contact, idx) => (
                             <div
                               key={idx}
-                              className="flex justify-between items-center p-2 rounded bg-background shadow-sm text-sm"
+                              className="flex justify-between items-center px-2 py-1 rounded bg-background text-xs"
                             >
                               <span className="font-medium truncate">
                                 {contact.name}
                               </span>
-                              <span className="text-xs text-muted-foreground truncate ml-4">
+                              <span className="text-[11px] text-muted-foreground truncate ml-2">
                                 {contact.email !== "N/A"
                                   ? contact.email
                                   : contact.city}
@@ -994,33 +823,25 @@ export default function EmailMarketing() {
                     </ScrollArea>
                   </div>
 
-                  {/* Action */}
-                  <div className="space-y-2">
+                  {/* Export */}
+                  <div className="space-y-1.5">
                     <Button
                       onClick={() => setExportDialogOpen(true)}
                       disabled={
                         !previewResult.records ||
                         previewResult.records.length === 0 ||
-                        previewMutation.isPending ||
-                        exportBlockedByMapping
+                        previewMutation.isPending
                       }
-                      variant="outline"
-                      className="w-full h-12 text-base"
+                      className="w-full h-10"
                       data-testid="button-preview-export"
                     >
-                      <Eye className="h-5 w-5 mr-2" />
-                      Preview All {previewResult.count.toLocaleString()} Records
+                      <Download className="h-4 w-4 mr-2" />
+                      Review & Export {previewResult.count.toLocaleString()}
                     </Button>
                     {!campaignCode.trim() && (
-                      <p className="text-xs text-center text-rose-500 font-medium flex items-center justify-center gap-1">
-                        <AlertCircle className="w-3 h-3" /> Campaign Code is
+                      <p className="text-[11px] text-center text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1">
+                        <AlertCircle className="w-3 h-3" /> Campaign code
                         required to export
-                      </p>
-                    )}
-                    {campaignCode.trim() && exportBlockedByMapping && (
-                      <p className="text-xs text-center text-amber-600 dark:text-amber-400 font-medium flex items-center justify-center gap-1">
-                        <TriangleAlert className="w-3 h-3" />
-                        Resolve suppression mapping issues before export
                       </p>
                     )}
                   </div>
@@ -1040,9 +861,7 @@ export default function EmailMarketing() {
           totalCount={previewResult.count}
           excludedCount={previewResult.excludedCount}
           campaignCode={campaignCode}
-          onExportAndSuppress={() => {
-            exportMutation.mutate();
-          }}
+          onExportAndSuppress={() => exportMutation.mutate()}
           isExporting={exportMutation.isPending}
         />
       )}

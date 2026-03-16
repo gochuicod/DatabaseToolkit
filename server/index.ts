@@ -1,7 +1,26 @@
 import express, { type Request, Response, NextFunction } from "express";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+
+// Load .env in development (no dotenv dependency needed)
+try {
+  const envPath = join(process.cwd(), ".env");
+  const envContent = readFileSync(envPath, "utf8");
+  for (const line of envContent.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const val = trimmed.slice(eqIdx + 1).trim();
+    if (key && !process.env[key]) process.env[key] = val;
+  }
+} catch {
+  // .env not found — rely on environment variables being set externally
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -61,8 +80,8 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
-    log(`Starting server in ${process.env.NODE_ENV || 'development'} mode`);
-    
+    log(`Starting server in ${process.env.NODE_ENV || "development"} mode`);
+
     await registerRoutes(httpServer, app);
     log("Routes registered successfully");
 

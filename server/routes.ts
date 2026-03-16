@@ -16,6 +16,8 @@ import {
   getTableRowCountsFast,
   getTableData,
   getSegmentMatchCounts,
+  getEmailFillRate,
+  runNativeQuery,
 } from "./metabase";
 import {
   countQuerySchema,
@@ -34,6 +36,7 @@ import {
   analyzeMarketingConceptMultiTable,
   analyzeMarketingConceptMasterTable,
   generateAnalysisSummary,
+  generateAnalysisSQL,
 } from "./openai";
 
 export async function registerRoutes(
@@ -290,6 +293,27 @@ export async function registerRoutes(
 
   // --- NEW V2 ROUTES FOR TWO-TABLE ARCHITECTURE ---
 
+  app.post("/api/ai/email-fill-rate", async (req, res) => {
+    try {
+      const { databaseId, masterTableId, emailColumn } = req.body;
+      if (!databaseId || !masterTableId || !emailColumn) {
+        return res.status(400).json({
+          error: "databaseId, masterTableId, and emailColumn are required",
+        });
+      }
+      const fillRate = await getEmailFillRate(
+        Number(databaseId),
+        Number(masterTableId),
+        String(emailColumn),
+      );
+      res.json({ fillRate });
+    } catch (error) {
+      console.error("Error checking email fill rate:", error);
+      // Return null fill rate rather than a 500 — non-fatal for the UI
+      res.json({ fillRate: null });
+    }
+  });
+
   app.post("/api/ai/analyze-concept-v2", async (req, res) => {
     try {
       const parsed = analyzeConceptSchemaV2.safeParse(req.body);
@@ -375,6 +399,7 @@ export async function registerRoutes(
         segments,
         contactCap,
         excludeDays,
+        filterEmailsOnly,
       } = req.body;
 
       // We'll create this function in metabase.ts next
@@ -386,6 +411,7 @@ export async function registerRoutes(
         segments,
         contactCap || 5000,
         excludeDays || 7,
+        filterEmailsOnly !== false,
       );
 
       res.json(result);
@@ -439,6 +465,7 @@ export async function registerRoutes(
         contactCap,
         excludeDays,
         campaignCode,
+        filterEmailsOnly,
       } = req.body;
 
       if (!campaignCode && historyTableId) {
@@ -462,6 +489,7 @@ export async function registerRoutes(
         contactCap || 5000,
         excludeDays || 7,
         sanitizedCampaignCode,
+        filterEmailsOnly !== false,
       );
 
       res.setHeader("Content-Type", "text/csv");
@@ -475,6 +503,103 @@ export async function registerRoutes(
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to export list",
       });
+    }
+  });
+
+  // ── AI SQL Analysis for Data Filter tool ────────────────────────────
+  app.post("/api/ai/sql-analysis", async (req, res) => {
+    try {
+      const { prompt, databaseId, tableId } = req.body;
+      if (!prompt || !databaseId || !tableId) {
+        return res.status(400).json({
+          error: "prompt, databaseId, and tableId are required",
+        });
+      }
+
+      // Fetch all tables + fields for the database so AI can suggest JOINs
+      const allTables = await getTables(databaseId);
+      const primaryTable = allTables.find((t) => t.id === tableId);
+      if (!primaryTable) {
+        return res.status(404).json({ error: "Table not found" });
+      }
+
+      const tablesWithFields = await Promise.all(
+        allTables.map(async (table) => {
+          const fields = await getFields(table.id);
+          return {
+            name: table.name,
+            display_name: table.display_name,
+            fields: fields.map((f) => ({
+              name: f.name,
+              display_name: f.display_name,
+              base_type: f.base_type,
+            })),
+          };
+        }),
+      );
+
+      // Step 1: AI generates SQL
+      const analysis = await generateAnalysisSQL(
+        prompt,
+        tablesWithFields,
+        primaryTable.name,
+      );
+
+      if (!analysis.sql) {
+        return res.json({
+          sql: "",
+          explanation: analysis.explanation,
+          columns: [],
+          rows: [],
+          chartConfig: null,
+        });
+      }
+
+      // Safety: block any non-SELECT statements
+      const sqlTrimmed = analysis.sql.trim().toUpperCase();
+      if (
+        !sqlTrimmed.startsWith("SELECT") ||
+        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(
+          sqlTrimmed,
+        )
+      ) {
+        return res.status(400).json({
+          error: "Only SELECT queries are allowed.",
+          sql: analysis.sql,
+        });
+      }
+
+      // Step 2: Execute the SQL against Metabase
+      const result = await runNativeQuery(databaseId, analysis.sql);
+
+      const columns = (result.cols || []).map((c: any) => ({
+        name: c.name,
+        display_name: c.display_name || c.name,
+        base_type: c.base_type || "type/Text",
+      }));
+
+      const rows = (result.rows || []).map((row: any[]) => {
+        const record: Record<string, any> = {};
+        columns.forEach((col: any, i: number) => {
+          record[col.name] = row[i];
+        });
+        return record;
+      });
+
+      res.json({
+        sql: analysis.sql,
+        explanation: analysis.explanation,
+        columns,
+        rows,
+        chartConfig: analysis.chartConfig,
+        rowCount: rows.length,
+      });
+    } catch (error) {
+      console.error("Error running AI SQL analysis:", error);
+      const errMsg =
+        error instanceof Error ? error.message : "Failed to run analysis";
+      // Return the error but also the SQL so the user can see what failed
+      res.status(500).json({ error: errMsg });
     }
   });
 

@@ -6,7 +6,7 @@ A comprehensive marketing toolkit with AI-powered tools for campaign creation, c
 
 This application provides 4 marketing tools:
 
-1. **Email Marketing Tool** - AI-powered email list generation using OpenAI to analyze campaign concepts and suggest customer segments
+1. **Email Marketing Tool** - AI-powered email list generation with two modes: direct Preview & Export (no AI, just constraints/suppression) or AI-powered Generate Targeting Logic for refined segments
 2. **BrainWorks Filtering** - Filter and export contact lists with multi-select filters (defaults to BrainWorks Data, compact "Add Filter" interface)
 3. **BrainWorks Analysis Tool** - Multiple analysis models with visualizations (defaults to BrainWorks Data):
    - RFM Segmentation (Recency, Frequency, Monetary scoring)
@@ -49,8 +49,9 @@ This application provides 4 marketing tools:
     - T1 (Master Email List): Contains contact data (Email, Name, DOB, Segment, Source)
     - T2 (History/Behavior Log): Contains email history (Email, CampaignID, SentDate, Opened, Clicked)
   - **Input Phase**: Campaign concept (fuzzy) + Hard filters (Birthday, Exclude Days, Contact Cap)
-  - **AI Analysis Phase**: AI analyzes T1 schema → suggests segments in "field_name:value" format
-  - **Query Orchestration**: System builds filters from AI suggestions + applies T2 exclusions
+  - **Two Modes**: "Preview & Export" (AI auto-analyzes concept + auto-selects valid segments) or "Generate Targeting Logic" (AI analysis with manual segment selection)
+  - **AI Analysis Phase**: AI analyzes T1 schema → suggests segments in "field_name:value" format with operator support (>=, >, <, !=)
+  - **Query Orchestration**: System builds filters from AI suggestions + applies T2 exclusions. Same-field segments are ORed (e.g., Category:A OR Category:B), different fields are ANDed. Text comparisons use LTRIM/RTRIM for whitespace-safe matching.
   - **Data Processing**: Shows total candidates, excluded count, and final count with ranking
   - **Preview & Export**: Modal-based full record preview (all database columns) before CSV download + automatic suppression logging
 - `client/src/components/campaign-export-dialog.tsx` - Full-screen modal for reviewing all records before export, with Copy to Clipboard and Download CSV + Log to Suppression actions

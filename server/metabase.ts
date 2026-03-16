@@ -9,6 +9,127 @@ import type {
 
 const ROW_LIMIT = 100000;
 
+interface ParsedSegment {
+  field: string;
+  operator: string;
+  isNumeric: boolean;
+  condition: string;
+}
+
+function parseSegmentsToConditions(segments: string[]): ParsedSegment[] {
+  const results: ParsedSegment[] = [];
+  for (const seg of segments) {
+    const colonIdx = seg.indexOf(":");
+    if (colonIdx === -1) continue;
+    const field = seg.substring(0, colonIdx);
+    let val = seg.substring(colonIdx + 1);
+    val = val.replace(/^["']+|["']+$/g, "").trim();
+
+    let operator = "=";
+    if (val.startsWith(">=")) {
+      operator = ">=";
+      val = val.substring(2).trim();
+    } else if (val.startsWith("<=")) {
+      operator = "<=";
+      val = val.substring(2).trim();
+    } else if (val.startsWith("!=")) {
+      operator = "!=";
+      val = val.substring(2).trim();
+    } else if (val.startsWith(">")) {
+      operator = ">";
+      val = val.substring(1).trim();
+    } else if (val.startsWith("<")) {
+      operator = "<";
+      val = val.substring(1).trim();
+    }
+
+    val = val.replace(/^["']+|["']+$/g, "").trim();
+
+    let sqlVal: string;
+    const isNumeric = !isNaN(Number(val)) && val.trim() !== "";
+    if (isNumeric) {
+      sqlVal = val;
+    } else if (val.toLowerCase() === "true") {
+      sqlVal = "1";
+    } else if (val.toLowerCase() === "false") {
+      sqlVal = "0";
+    } else {
+      sqlVal = `'${val.replace(/'/g, "''")}'`;
+    }
+
+    let condition: string;
+    if (!isNumeric && operator === "=") {
+      condition = `LTRIM(RTRIM([${field}])) ${operator} ${sqlVal}`;
+    } else {
+      condition = `[${field}] ${operator} ${sqlVal}`;
+    }
+
+    results.push({ field, operator, isNumeric, condition });
+  }
+  return results;
+}
+
+function buildGroupedWhereClause(parsed: ParsedSegment[]): string {
+  if (parsed.length === 0) return "";
+
+  const fieldGroups: Record<string, ParsedSegment[]> = {};
+  for (const p of parsed) {
+    if (!fieldGroups[p.field]) fieldGroups[p.field] = [];
+    fieldGroups[p.field].push(p);
+  }
+
+  const clauses: string[] = [];
+  for (const [, group] of Object.entries(fieldGroups)) {
+    const equalityConditions = group.filter((p) => p.operator === "=");
+    const rangeConditions = group.filter((p) => p.operator !== "=");
+
+    if (equalityConditions.length > 1) {
+      clauses.push(
+        `(${equalityConditions.map((p) => p.condition).join(" OR ")})`,
+      );
+    } else if (equalityConditions.length === 1) {
+      clauses.push(equalityConditions[0].condition);
+    }
+
+    for (const r of rangeConditions) {
+      clauses.push(r.condition);
+    }
+  }
+
+  return clauses.length > 0 ? ` AND ${clauses.join(" AND ")}` : "";
+}
+
+// Returns a bare SQL condition string (no leading " AND ") suitable for use inside
+// a CASE WHEN expression. Returns "1=0" when no conditions exist (matches nothing).
+function buildConditionClause(parsed: ParsedSegment[]): string {
+  const grouped = buildGroupedWhereClause(parsed);
+  if (!grouped) return "1=0";
+  // buildGroupedWhereClause returns " AND cond1 AND cond2..." — strip leading " AND "
+  return grouped.startsWith(" AND ") ? grouped.substring(5) : grouped;
+}
+
+/**
+ * Splits segments into "core demographic" (always keep) and
+ * "specific" (product/channel/source — drop in fallback tier).
+ * Returns only the core segments for use in a relaxed fallback query.
+ */
+function buildRelaxedSegments(segments: string[]): string[] {
+  const CORE_PATTERNS =
+    /^(gender|sex|age|ddob|dob|birth|birthdate|pref|prefecture|country|nation|nationality)/i;
+  return segments.filter((seg) => {
+    const colonIdx = seg.indexOf(":");
+    if (colonIdx === -1) return false;
+    const field = seg.substring(0, colonIdx);
+    const val = seg.substring(colonIdx + 1).trim();
+    // Always keep demographic segments
+    if (CORE_PATTERNS.test(field)) return true;
+    // Keep any segment using a range/comparison operator — these are campaign-concept
+    // anchors (e.g. GL_LTV:>0, TSI_LTV:>0) that broadly define the target audience
+    if (/^[><]/.test(val) || val.startsWith("!=")) return true;
+    return false;
+  });
+}
+
 function getMetabaseUrl(): string {
   const url = process.env.METABASE_URL || "";
   return url.replace(/\/+$/, "");
@@ -407,6 +528,43 @@ const METABASE_PASSWORD = process.env.METABASE_PASSWORD;
 let sessionToken: string | null = null;
 let sessionExpiresAt: number = 0;
 
+// ── In-memory TTL cache ──────────────────────────────────────────────
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
+const cache = new Map<string, CacheEntry<any>>();
+
+function cacheGet<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.data as T;
+}
+
+function cacheSet<T>(key: string, data: T, ttlMs: number): void {
+  cache.set(key, { data, expiresAt: Date.now() + ttlMs });
+}
+
+export function cacheInvalidatePrefix(prefix: string): void {
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
+}
+
+export function cacheClearAll(): void {
+  cache.clear();
+}
+
+// TTL constants
+const CACHE_TTL_METADATA = 5 * 60 * 1000; // 5 min for tables/fields
+const CACHE_TTL_TOTAL_COUNT = 2 * 60 * 1000; // 2 min for total row counts
+const CACHE_TTL_FIELD_OPTIONS = 3 * 60 * 1000; // 3 min for field distinct values
+
 async function getSessionToken(): Promise<string> {
   if (sessionToken && Date.now() < sessionExpiresAt) {
     return sessionToken;
@@ -484,18 +642,28 @@ function getSimulatedRowCount(id: number): number {
 }
 
 export async function getDatabases(): Promise<MetabaseDatabase[]> {
+  const cacheKey = "databases";
+  const cached = cacheGet<MetabaseDatabase[]>(cacheKey);
+  if (cached) return cached;
+
   const data = await metabaseRequest("/api/database");
-  return data.data.map((db: any) => ({
+  const result = data.data.map((db: any) => ({
     id: db.id,
     name: db.name,
     engine: db.engine,
     size_info: getSimulatedDbSize(db.id),
   }));
+  cacheSet(cacheKey, result, CACHE_TTL_METADATA);
+  return result;
 }
 
 export async function getTables(databaseId: number): Promise<MetabaseTable[]> {
+  const cacheKey = `tables:${databaseId}`;
+  const cached = cacheGet<MetabaseTable[]>(cacheKey);
+  if (cached) return cached;
+
   const data = await metabaseRequest(`/api/database/${databaseId}/metadata`);
-  return data.tables.map((table: any) => ({
+  const result = data.tables.map((table: any) => ({
     id: table.id,
     name: table.name,
     display_name: table.display_name,
@@ -503,11 +671,17 @@ export async function getTables(databaseId: number): Promise<MetabaseTable[]> {
     db_id: databaseId,
     row_count: table.row_count || getSimulatedRowCount(table.id),
   }));
+  cacheSet(cacheKey, result, CACHE_TTL_METADATA);
+  return result;
 }
 
 export async function getFields(tableId: number): Promise<MetabaseField[]> {
+  const cacheKey = `fields:${tableId}`;
+  const cached = cacheGet<MetabaseField[]>(cacheKey);
+  if (cached) return cached;
+
   const data = await metabaseRequest(`/api/table/${tableId}/query_metadata`);
-  return data.fields.map((field: any) => ({
+  const result = data.fields.map((field: any) => ({
     id: field.id,
     name: field.name,
     display_name: field.display_name,
@@ -515,6 +689,8 @@ export async function getFields(tableId: number): Promise<MetabaseField[]> {
     semantic_type: field.semantic_type,
     table_id: tableId,
   }));
+  cacheSet(cacheKey, result, CACHE_TTL_METADATA);
+  return result;
 }
 
 function buildFilterClause(filter: FilterValue): any[] {
@@ -568,22 +744,65 @@ export async function getCount(
     sourceQuery.limit = limit;
   }
 
-  const totalQuery = {
-    database: databaseId,
-    type: "query",
-    query: {
-      "source-query": sourceQuery,
-      aggregation: [["count"]],
-    },
-  };
+  // Try to use cached total count to avoid redundant query
+  const totalCacheKey = `totalCount:${databaseId}:${tableId}:${limit}`;
+  let total = cacheGet<number>(totalCacheKey);
 
-  const totalResult = await metabaseRequest("/api/dataset", {
-    method: "POST",
-    body: JSON.stringify(totalQuery),
-  });
+  if (total === null) {
+    const totalQuery = {
+      database: databaseId,
+      type: "query",
+      query: {
+        "source-query": sourceQuery,
+        aggregation: [["count"]],
+      },
+    };
 
-  const total = totalResult.data?.rows?.[0]?.[0] ?? 0;
+    if (filters.length === 0) {
+      // No filters — just need total count
+      const totalResult = await metabaseRequest("/api/dataset", {
+        method: "POST",
+        body: JSON.stringify(totalQuery),
+      });
+      total = totalResult.data?.rows?.[0]?.[0] ?? 0;
+      cacheSet(totalCacheKey, total, CACHE_TTL_TOTAL_COUNT);
+      return { count: total, total, percentage: 100 };
+    }
 
+    // Has filters — run total + filtered count in PARALLEL
+    const filterClauses = filters.map(buildFilterClause);
+    const combinedFilter =
+      filterClauses.length === 1 ? filterClauses[0] : ["and", ...filterClauses];
+
+    const countQuery = {
+      database: databaseId,
+      type: "query",
+      query: {
+        "source-query": sourceQuery,
+        aggregation: [["count"]],
+        filter: combinedFilter,
+      },
+    };
+
+    const [totalResult, countResult] = await Promise.all([
+      metabaseRequest("/api/dataset", {
+        method: "POST",
+        body: JSON.stringify(totalQuery),
+      }),
+      metabaseRequest("/api/dataset", {
+        method: "POST",
+        body: JSON.stringify(countQuery),
+      }),
+    ]);
+
+    total = totalResult.data?.rows?.[0]?.[0] ?? 0;
+    cacheSet(totalCacheKey, total, CACHE_TTL_TOTAL_COUNT);
+    const count = countResult.data?.rows?.[0]?.[0] ?? 0;
+    const percentage = total > 0 ? (count / total) * 100 : 0;
+    return { count, total, percentage };
+  }
+
+  // Total was cached
   if (filters.length === 0) {
     return { count: total, total, percentage: 100 };
   }
@@ -609,7 +828,6 @@ export async function getCount(
 
   const count = countResult.data?.rows?.[0]?.[0] ?? 0;
   const percentage = total > 0 ? (count / total) * 100 : 0;
-
   return { count, total, percentage };
 }
 
@@ -619,6 +837,10 @@ export async function getFieldOptions(
   fieldId: number,
   limit: number = 100000,
 ): Promise<FieldOption[]> {
+  const cacheKey = `fieldOptions:${databaseId}:${tableId}:${fieldId}:${limit}`;
+  const cached = cacheGet<FieldOption[]>(cacheKey);
+  if (cached) return cached;
+
   const sourceQuery: any = { "source-table": tableId };
   if (limit < 999999999) {
     sourceQuery.limit = limit;
@@ -642,12 +864,14 @@ export async function getFieldOptions(
   });
 
   const rows = result.data?.rows ?? [];
-  return rows
+  const options = rows
     .filter((row: any[]) => row[0] !== null && row[0] !== "")
     .map((row: any[]) => ({
       value: String(row[0]),
       count: row[1] ?? 0,
     }));
+  cacheSet(cacheKey, options, CACHE_TTL_FIELD_OPTIONS);
+  return options;
 }
 
 export async function getMailingList(
@@ -1154,6 +1378,9 @@ async function fetchNativeRowsInBatches(
   const rows: any[] = [];
   let cols: any[] = [];
   let offset = 0;
+  // 2000 = Metabase's default bare-row limit per /api/dataset response.
+  // Requesting more than 2000 causes Metabase to silently truncate, which makes
+  // the loop think there are no more rows and stops pagination early.
   const batchSize = 2000;
 
   while (rows.length < targetRows) {
@@ -1181,6 +1408,44 @@ async function fetchNativeRowsInBatches(
     if (batchRows.length < nextBatch) {
       break;
     }
+  }
+
+  return { rows, cols };
+}
+
+// Like fetchNativeRowsInBatches but accepts a custom ORDER BY expression so the DB
+// can rank rows (e.g. exact-match contacts first, related second, fill contacts last).
+async function fetchRankedRowsInBatches(
+  databaseId: number,
+  tableName: string,
+  whereClause: string,
+  orderByExpr: string,
+  targetRows: number,
+): Promise<{ rows: any[]; cols: any[] }> {
+  const rows: any[] = [];
+  let cols: any[] = [];
+  let offset = 0;
+  const batchSize = 2000; // Match Metabase's bare-row limit to avoid silent truncation
+
+  while (rows.length < targetRows) {
+    const remaining = targetRows - rows.length;
+    const nextBatch = Math.min(batchSize, remaining);
+    const batchSql =
+      `SELECT * FROM [${tableName}] ` +
+      `WHERE ${whereClause} ` +
+      `ORDER BY ${orderByExpr} ` +
+      `OFFSET ${offset} ROWS FETCH NEXT ${nextBatch} ROWS ONLY;`;
+
+    const batchResult = await runNativeQuery(databaseId, batchSql);
+    if (cols.length === 0) cols = batchResult.cols ?? [];
+
+    const batchRows = batchResult.rows ?? [];
+    if (batchRows.length === 0) break;
+
+    rows.push(...batchRows);
+    offset += batchRows.length;
+
+    if (batchRows.length < nextBatch) break;
   }
 
   return { rows, cols };
@@ -1233,53 +1498,8 @@ export async function getExportMappingV2(
 
   let whereClause = "1=1";
   if (segments && segments.length > 0) {
-    const segmentConditions = segments
-      .map((seg) => {
-        const colonIdx = seg.indexOf(":");
-        if (colonIdx === -1) return "";
-
-        const field = seg.substring(0, colonIdx);
-        let val = seg.substring(colonIdx + 1);
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let operator = "=";
-        if (val.startsWith(">=")) {
-          operator = ">=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("<=")) {
-          operator = "<=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("!=")) {
-          operator = "!=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith(">")) {
-          operator = ">";
-          val = val.substring(1).trim();
-        } else if (val.startsWith("<")) {
-          operator = "<";
-          val = val.substring(1).trim();
-        }
-
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let sqlVal;
-        if (!isNaN(Number(val)) && val.trim() !== "") {
-          sqlVal = val;
-        } else if (val.toLowerCase() === "true") {
-          sqlVal = "1";
-        } else if (val.toLowerCase() === "false") {
-          sqlVal = "0";
-        } else {
-          sqlVal = `'${val.replace(/'/g, "''")}'`;
-        }
-
-        return `[${field}] ${operator} ${sqlVal}`;
-      })
-      .filter(Boolean);
-
-    if (segmentConditions.length > 0) {
-      whereClause += ` AND ${segmentConditions.join(" AND ")}`;
-    }
+    const parsed = parseSegmentsToConditions(segments);
+    whereClause += buildGroupedWhereClause(parsed);
   }
 
   const sampled = await fetchNativeRowsInBatches(
@@ -1456,57 +1676,26 @@ export async function getSegmentMatchCounts(
   segments: string[],
 ): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
+  const parsedList = segments.map((seg) => {
+    const colonIdx = seg.indexOf(":");
+    if (colonIdx === -1) return null;
+    const parsed = parseSegmentsToConditions([seg]);
+    return parsed.length > 0 ? parsed[0] : null;
+  });
 
   await Promise.all(
-    segments.map(async (seg) => {
-      const colonIdx = seg.indexOf(":");
-      if (colonIdx === -1) {
+    segments.map(async (seg, i) => {
+      const p = parsedList[i];
+      if (!p) {
         counts[seg] = 0;
         return;
       }
-      const field = seg.substring(0, colonIdx);
-      let val = seg
-        .substring(colonIdx + 1)
-        .replace(/^["']+|["']+$/g, "")
-        .trim();
-
-      let operator = "=";
-      if (val.startsWith(">=")) {
-        operator = ">=";
-        val = val.substring(2).trim();
-      } else if (val.startsWith("<=")) {
-        operator = "<=";
-        val = val.substring(2).trim();
-      } else if (val.startsWith("!=")) {
-        operator = "!=";
-        val = val.substring(2).trim();
-      } else if (val.startsWith(">")) {
-        operator = ">";
-        val = val.substring(1).trim();
-      } else if (val.startsWith("<")) {
-        operator = "<";
-        val = val.substring(1).trim();
-      }
-
-      val = val.replace(/^["']+|["']+$/g, "").trim();
-
-      let sqlVal: string;
-      if (!isNaN(Number(val)) && val.trim() !== "") {
-        sqlVal = val;
-      } else if (val.toLowerCase() === "true") {
-        sqlVal = "1";
-      } else if (val.toLowerCase() === "false") {
-        sqlVal = "0";
-      } else {
-        sqlVal = `'${val.replace(/'/g, "''")}'`;
-      }
-
       try {
-        const sql = `SELECT COUNT(*) FROM [${tableName}] WHERE [${field}] ${operator} ${sqlVal};`;
+        const sql = `SELECT COUNT(*) FROM [${tableName}] WHERE ${p.condition};`;
         const result = await runNativeQuery(databaseId, sql);
         counts[seg] = Number(result.rows[0]?.[0] ?? 0);
       } catch {
-        counts[seg] = -1; // field doesn't exist in this table
+        counts[seg] = -1;
       }
     }),
   );
@@ -1518,6 +1707,10 @@ export async function getTableRowCountsFast(
   databaseId: number,
   tableNames: string[],
 ): Promise<Record<string, number>> {
+  const cacheKey = `fastCounts:${databaseId}`;
+  const cached = cacheGet<Record<string, number>>(cacheKey);
+  if (cached) return cached;
+
   const sql = `
     SELECT t.name AS table_name, SUM(p.rows) AS row_count
     FROM sys.tables t
@@ -1532,6 +1725,7 @@ export async function getTableRowCountsFast(
     for (const row of result.rows) {
       counts[String(row[0])] = Number(row[1]) || 0;
     }
+    cacheSet(cacheKey, counts, CACHE_TTL_TOTAL_COUNT);
     return counts;
   } catch (err) {
     console.error(
@@ -1544,6 +1738,27 @@ export async function getTableRowCountsFast(
 
 // --- MS SQL SERVER V2 FUNCTIONS (OPTIMIZED FOR MILLIONS OF ROWS) ---
 
+export async function getEmailFillRate(
+  databaseId: number,
+  masterTableId: number,
+  emailColumn: string,
+): Promise<number> {
+  const masterTables = await getTables(databaseId);
+  const masterTable = masterTables.find((t) => t.id === masterTableId);
+  if (!masterTable) throw new Error("Master table not found");
+
+  // Sanitize column name to prevent injection
+  const safeCol = emailColumn.replace(/[^\w\s\-]/g, "");
+  const sql = `SELECT
+    CASE WHEN COUNT(*) = 0 THEN 0
+    ELSE CAST(COUNT([${safeCol}]) AS FLOAT) * 100.0 / COUNT(*)
+    END AS fill_rate
+  FROM [${masterTable.name}];`;
+
+  const result = await runNativeQuery(databaseId, sql);
+  return Math.round(Number(result.rows?.[0]?.[0] ?? 0));
+}
+
 export async function getMarketingPreviewV2(
   databaseId: number,
   masterTableId: number,
@@ -1552,81 +1767,82 @@ export async function getMarketingPreviewV2(
   segments: string[],
   contactCap: number,
   excludeDays: number,
+  filterEmailsOnly: boolean = true,
 ) {
-  const masterTables = await getTables(databaseId);
+  // Fetch tables + fields in PARALLEL
+  const [masterTables, masterFields] = await Promise.all([
+    getTables(databaseId),
+    filterEmailsOnly ? getFields(masterTableId) : Promise.resolve([]),
+  ]);
   const masterTable = masterTables.find((t) => t.id === masterTableId);
   if (!masterTable) throw new Error("Master table not found");
 
-  let whereClause = "1=1";
-  if (segments && segments.length > 0) {
-    const segmentConditions = segments
-      .map((seg) => {
-        const colonIdx = seg.indexOf(":");
-        if (colonIdx === -1) return "";
-        const field = seg.substring(0, colonIdx);
-        let val = seg.substring(colonIdx + 1);
-
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let operator = "=";
-        if (val.startsWith(">=")) {
-          operator = ">=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("<=")) {
-          operator = "<=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("!=")) {
-          operator = "!=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith(">")) {
-          operator = ">";
-          val = val.substring(1).trim();
-        } else if (val.startsWith("<")) {
-          operator = "<";
-          val = val.substring(1).trim();
-        }
-
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let sqlVal;
-        if (!isNaN(Number(val)) && val.trim() !== "") {
-          sqlVal = val;
-        } else if (val.toLowerCase() === "true") {
-          sqlVal = "1";
-        } else if (val.toLowerCase() === "false") {
-          sqlVal = "0";
-        } else {
-          sqlVal = `'${val.replace(/'/g, "''")}'`;
-        }
-        return `[${field}] ${operator} ${sqlVal}`;
-      })
-      .filter(Boolean);
-
-    if (segmentConditions.length > 0)
-      whereClause += ` AND ${segmentConditions.join(" AND ")}`;
+  // Detect email column from table field metadata when filter is requested
+  let emailColName: string | null = null;
+  if (filterEmailsOnly) {
+    const emailField = masterFields.find((f: MetabaseField) => {
+      if (f.semantic_type === "type/Email") return true;
+      const n = normalizeColName(f.name);
+      return (
+        n.includes("email") ||
+        n.includes("mail") ||
+        n.includes("メール") ||
+        n.includes("eメール")
+      );
+    });
+    emailColName = emailField?.name ?? null;
   }
 
-  const topLimit = Math.min(Math.max(contactCap * 5, contactCap), 100000);
+  // Segment-filtered WHERE for the count display (shows how many matched targeting rules)
+  let whereClause = "1=1";
+  if (segments && segments.length > 0) {
+    const parsed = parseSegmentsToConditions(segments);
+    whereClause += buildGroupedWhereClause(parsed);
+  }
+  if (filterEmailsOnly && emailColName) {
+    whereClause += ` AND [${emailColName}] IS NOT NULL AND LEN(LTRIM(RTRIM([${emailColName}]))) > 0`;
+  }
+
+  // Build ranked ORDER BY: Tier 1 = exact segment match, Tier 2 = related/concept match,
+  // Tier 3 = any contact with email. This guarantees we always fill to contactCap.
+  const exactParsed =
+    segments?.length > 0 ? parseSegmentsToConditions(segments) : [];
+  const relaxedParsed =
+    segments?.length > 0
+      ? parseSegmentsToConditions(buildRelaxedSegments(segments))
+      : [];
+  const exactCond = buildConditionClause(exactParsed);
+  const relaxedCond = buildConditionClause(relaxedParsed);
+
+  // Ranked fetch uses email-only WHERE so tier 3 fill always finds contacts
+  let rankedWhere = "1=1";
+  if (filterEmailsOnly && emailColName) {
+    rankedWhere += ` AND [${emailColName}] IS NOT NULL AND LEN(LTRIM(RTRIM([${emailColName}]))) > 0`;
+  }
+  const rankOrderBy = `CASE WHEN (${exactCond}) THEN 1 WHEN (${relaxedCond}) THEN 2 ELSE 3 END, (SELECT NULL)`;
+  const fetchLimit = Math.min(contactCap * 5, 100000);
+
   console.log("🎯 PREVIEW QUERY DEBUG:", {
     contactCap,
-    topLimit,
-    whereClause: whereClause.substring(0, 100) + "...",
+    fetchLimit,
+    exactCond: exactCond.substring(0, 80),
     tableName: masterTable.name,
+    filterEmailsOnly,
+    emailColName,
   });
 
-  const totalCandidates = await getNativeRowCount(
-    databaseId,
-    masterTable.name,
-    whereClause,
-  );
-
-  const { rows: previewRows, cols: previewCols } =
-    await fetchNativeRowsInBatches(
-      databaseId,
-      masterTable.name,
-      whereClause,
-      topLimit,
-    );
+  // Run count + ranked fetch in PARALLEL
+  const [totalCandidates, { rows: previewRows, cols: previewCols }] =
+    await Promise.all([
+      getNativeRowCount(databaseId, masterTable.name, whereClause),
+      fetchRankedRowsInBatches(
+        databaseId,
+        masterTable.name,
+        rankedWhere,
+        rankOrderBy,
+        fetchLimit,
+      ),
+    ]);
 
   console.log("🎯 PREVIEW DATABASE RESPONSE:", {
     totalCandidates,
@@ -1655,11 +1871,14 @@ export async function getMarketingPreviewV2(
 
       if (candidateKeys.size > 0) {
         try {
-          const suppTables = await getTables(historyDbId);
+          // Fetch suppression metadata in PARALLEL
+          const [suppTables, suppFields] = await Promise.all([
+            getTables(historyDbId),
+            getFields(historyTableId),
+          ]);
           const suppTable = suppTables.find((t) => t.id === historyTableId);
 
           if (suppTable) {
-            const suppFields = await getFields(historyTableId);
             const refField = findSuppressionRefField(suppFields);
 
             const dateField = suppFields.find(
@@ -1667,39 +1886,51 @@ export async function getMarketingPreviewV2(
                 f.base_type === "type/DateTime" || f.base_type === "type/Date",
             );
 
+            // Detect Source_System column for source-scoped suppression
+            const sourceField =
+              findSuppressionFieldByNames(suppFields, ["Source_System"]) ||
+              suppFields.find(
+                (f: any) =>
+                  normalizeColName(f.name).includes("source") ||
+                  normalizeColName(f.name).includes("system"),
+              );
+
             if (refField) {
-              const candidateArray = Array.from(candidateKeys);
-              const chunkSize = 2000;
+              // Optimized: fetch ALL matching suppression records in a single query
+              // instead of chunked IN-clause lookups (table is small — few thousand rows)
+              let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE 1=1`;
+              if (dateField) {
+                suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+              }
+              if (sourceField) {
+                const safeTableName = masterTable.name.replace(/'/g, "''");
+                // Match both plain table name format ("TableName") and structured format ("db:X | table:TableName | ...")
+                suppSql += ` AND ([${sourceField.name}] = '${safeTableName}' OR [${sourceField.name}] LIKE '%table:${safeTableName}%')`;
+              }
 
-              for (let i = 0; i < candidateArray.length; i += chunkSize) {
-                const chunk = candidateArray.slice(i, i + chunkSize);
-                const inValues = chunk
-                  .map((v) => `'${v.replace(/'/g, "''")}'`)
-                  .join(",");
-
-                let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${refField.name}] IN (${inValues})`;
-                if (dateField) {
-                  suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+              const suppResult = await runNativeQuery(historyDbId, suppSql);
+              // Filter in-memory: only suppress candidates we actually have
+              for (const r of suppResult.rows) {
+                const val = String(r[0]).toLowerCase().trim();
+                if (candidateKeys.has(val)) {
+                  suppressedIds.add(val);
                 }
-
-                const suppResult = await runNativeQuery(historyDbId, suppSql);
-                suppResult.rows.forEach((r) =>
-                  suppressedIds.add(String(r[0]).toLowerCase().trim()),
-                );
               }
               console.log(
-                `Preview exclusion: Found ${suppressedIds.size} suppressed refs using column [${refField.name}]`,
+                `Preview exclusion: Found ${suppressedIds.size} suppressed refs using column [${refField.name}] (source-scoped to db:${databaseId} table:${masterTable.name})`,
               );
             }
           }
         } catch (e) {
-          console.error("Failed to lookup suppression list via IN clause:", e);
+          console.error("Failed to lookup suppression list:", e);
         }
       }
     }
   }
 
+  // Rows are pre-ranked by the DB (exact → related → any email). Single pass to fill cap.
   for (const row of previewRows) {
+    if (finalRows.length >= contactCap) break;
     if (previewRefIndex !== -1 && suppressedIds.size > 0) {
       const val = String(row[previewRefIndex]).toLowerCase().trim();
       if (val && val !== "null" && val !== "" && suppressedIds.has(val)) {
@@ -1708,13 +1939,17 @@ export async function getMarketingPreviewV2(
       }
     }
     finalRows.push(row);
-    if (finalRows.length >= contactCap) break;
   }
+
+  const exactMatchCount = finalRows.length;
+  const relaxedCount = 0;
 
   console.log("🎯 PREVIEW FILTERING RESULTS:", {
     totalFetched: previewRows.length,
     suppressedIds: suppressedIds.size,
     excluded: excludedCount,
+    exactMatchCount,
+    relaxedCount,
     finalRowsCount: finalRows.length,
     targetCap: contactCap,
   });
@@ -1836,27 +2071,66 @@ export async function getMarketingPreviewV2(
   // Build a human-readable warning when no results come back
   let filterWarning: string | null = null;
   if (finalRows.length === 0) {
-    if (totalCandidates === 0 && segments.length === 0) {
-      filterWarning =
-        "The selected table appears to be empty or returned no rows.";
-    } else if (totalCandidates === 0 && segments.length > 0) {
-      const segmentList = segments.map((s) => `"${s}"`).join(", ");
-      filterWarning =
-        `None of the targeting rules matched any records in this table. ` +
-        `The following filters returned 0 results: ${segmentList}. ` +
-        `This usually means the suggested field names or values do not exist in the selected database. ` +
-        `Try re-analyzing with a different table, or remove individual filters to isolate which ones have no matches.`;
-    } else if (totalCandidates > 0 && excludedCount > 0) {
-      filterWarning =
-        `${totalCandidates.toLocaleString()} contacts matched the targeting rules, but all ${excludedCount.toLocaleString()} were suppressed. ` +
-        `Try increasing the "Exclude Mailed Within" days or selecting a different suppression window.`;
-    } else if (totalCandidates > 0) {
-      filterWarning =
-        `${totalCandidates.toLocaleString()} contacts matched the targeting rules but all were filtered out. ` +
-        `Check that the field names and values suggested by the AI exist in this table.`;
-    } else {
-      filterWarning =
-        "No contacts matched the campaign criteria. The AI-suggested targeting rules may not align with the fields available in this table. Try re-analyzing with a clearer campaign description.";
+    // Check if an email filter is the cause when there were segment matches
+    if (filterEmailsOnly && emailColName && segments.length > 0) {
+      const whereWithoutEmail = whereClause.replace(
+        ` AND [${emailColName}] IS NOT NULL AND LEN(LTRIM(RTRIM([${emailColName}]))) > 0`,
+        "",
+      );
+      try {
+        const totalWithoutEmailFilter = await getNativeRowCount(
+          databaseId,
+          masterTable.name,
+          whereWithoutEmail,
+        );
+        if (totalWithoutEmailFilter > 0) {
+          filterWarning =
+            `${totalWithoutEmailFilter.toLocaleString()} contacts matched the targeting rules, but none have a valid email address. ` +
+            `Uncheck "Require email address" to see all matched records.`;
+        }
+      } catch {
+        // Non-fatal — fall through to generic warnings
+      }
+    }
+
+    if (!filterWarning) {
+      if (totalCandidates === 0 && segments.length === 0) {
+        filterWarning =
+          "The selected table appears to be empty or returned no rows.";
+      } else if (totalCandidates === 0 && segments.length > 0) {
+        const segmentList = segments.map((s) => `"${s}"`).join(", ");
+        filterWarning =
+          `None of the targeting rules matched any records in this table. ` +
+          `The following filters returned 0 results: ${segmentList}. ` +
+          `This usually means the suggested field names or values do not exist in the selected database. ` +
+          `Try re-analyzing with a different table, or remove individual filters to isolate which ones have no matches.`;
+      } else if (totalCandidates > 0 && excludedCount > 0) {
+        filterWarning =
+          `${totalCandidates.toLocaleString()} contacts matched the targeting rules, but all ${excludedCount.toLocaleString()} were suppressed. ` +
+          `Try increasing the "Exclude Mailed Within" days or selecting a different suppression window.`;
+      } else if (totalCandidates > 0) {
+        filterWarning =
+          `${totalCandidates.toLocaleString()} contacts matched the targeting rules but all were filtered out. ` +
+          `Check that the field names and values suggested by the AI exist in this table.`;
+      } else {
+        filterWarning =
+          "No contacts matched the campaign criteria. The AI-suggested targeting rules may not align with the fields available in this table. Try re-analyzing with a clearer campaign description.";
+      }
+    }
+  }
+
+  // Compute totalWithEmail when filter is OFF and email column exists
+  let totalWithEmail: number | undefined;
+  if (!filterEmailsOnly && emailColName) {
+    try {
+      const emailWhereClause = `${whereClause} AND [${emailColName}] IS NOT NULL AND LEN(LTRIM(RTRIM([${emailColName}]))) > 0`;
+      totalWithEmail = await getNativeRowCount(
+        databaseId,
+        masterTable.name,
+        emailWhereClause,
+      );
+    } catch {
+      // Non-fatal
     }
   }
 
@@ -1869,6 +2143,11 @@ export async function getMarketingPreviewV2(
     totalCandidates,
     historyTableUsed: !!historyDbId,
     filterWarning,
+    emailColumn: emailColName,
+    emailFilterApplied: filterEmailsOnly && !!emailColName,
+    totalWithEmail,
+    exactMatchCount,
+    relaxedCount,
   };
 }
 
@@ -1881,71 +2160,64 @@ export async function runMarketingExportAndLogV2(
   contactCap: number,
   excludeDays: number,
   campaignCode: string,
+  filterEmailsOnly: boolean = true,
 ): Promise<string> {
-  const masterTables = await getTables(databaseId);
+  // Fetch tables + fields in PARALLEL
+  const [masterTables, masterFields] = await Promise.all([
+    getTables(databaseId),
+    filterEmailsOnly ? getFields(masterTableId) : Promise.resolve([]),
+  ]);
   const masterTable = masterTables.find((t) => t.id === masterTableId);
   if (!masterTable) throw new Error("Master table not found");
 
-  let whereClause = "1=1";
-  if (segments && segments.length > 0) {
-    const segmentConditions = segments
-      .map((seg) => {
-        const colonIdx = seg.indexOf(":");
-        if (colonIdx === -1) return "";
-        const field = seg.substring(0, colonIdx);
-        let val = seg.substring(colonIdx + 1);
-
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let operator = "=";
-        if (val.startsWith(">=")) {
-          operator = ">=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("<=")) {
-          operator = "<=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith("!=")) {
-          operator = "!=";
-          val = val.substring(2).trim();
-        } else if (val.startsWith(">")) {
-          operator = ">";
-          val = val.substring(1).trim();
-        } else if (val.startsWith("<")) {
-          operator = "<";
-          val = val.substring(1).trim();
-        }
-
-        val = val.replace(/^["']+|["']+$/g, "").trim();
-
-        let sqlVal;
-        if (!isNaN(Number(val)) && val.trim() !== "") {
-          sqlVal = val;
-        } else if (val.toLowerCase() === "true") {
-          sqlVal = "1";
-        } else if (val.toLowerCase() === "false") {
-          sqlVal = "0";
-        } else {
-          sqlVal = `'${val.replace(/'/g, "''")}'`;
-        }
-        return `[${field}] ${operator} ${sqlVal}`;
-      })
-      .filter(Boolean);
-    if (segmentConditions.length > 0)
-      whereClause += ` AND ${segmentConditions.join(" AND ")}`;
+  // Detect email column when filter is requested
+  let emailColName: string | null = null;
+  if (filterEmailsOnly) {
+    const emailField = masterFields.find((f: MetabaseField) => {
+      if (f.semantic_type === "type/Email") return true;
+      const n = normalizeColName(f.name);
+      return (
+        n.includes("email") ||
+        n.includes("mail") ||
+        n.includes("メール") ||
+        n.includes("eメール")
+      );
+    });
+    emailColName = emailField?.name ?? null;
   }
 
-  const topLimit = Math.min(Math.max(contactCap * 5, contactCap), 100000);
+  // Build ranked ORDER BY: Tier 1 = exact segment match, Tier 2 = related/concept match,
+  // Tier 3 = any contact with email. Guarantees we always fill to contactCap.
+  const exactParsedExport =
+    segments?.length > 0 ? parseSegmentsToConditions(segments) : [];
+  const relaxedParsedExport =
+    segments?.length > 0
+      ? parseSegmentsToConditions(buildRelaxedSegments(segments))
+      : [];
+  const exactCondExport = buildConditionClause(exactParsedExport);
+  const relaxedCondExport = buildConditionClause(relaxedParsedExport);
+
+  let rankedWhereExport = "1=1";
+  if (filterEmailsOnly && emailColName) {
+    rankedWhereExport += ` AND [${emailColName}] IS NOT NULL AND LEN(LTRIM(RTRIM([${emailColName}]))) > 0`;
+  }
+  const rankOrderByExport = `CASE WHEN (${exactCondExport}) THEN 1 WHEN (${relaxedCondExport}) THEN 2 ELSE 3 END, (SELECT NULL)`;
+  const fetchLimitExport = Math.min(contactCap * 5, 100000);
+
   console.log("🎯 EXPORT QUERY DEBUG:", {
     contactCap,
-    topLimit,
+    fetchLimitExport,
     tableName: masterTable.name,
+    filterEmailsOnly,
+    emailColName,
   });
 
-  const { rows: exportRows, cols: exportCols } = await fetchNativeRowsInBatches(
+  const { rows: exportRows, cols: exportCols } = await fetchRankedRowsInBatches(
     databaseId,
     masterTable.name,
-    whereClause,
-    topLimit,
+    rankedWhereExport,
+    rankOrderByExport,
+    fetchLimitExport,
   );
 
   console.log("🎯 EXPORT DATABASE RESPONSE:", {
@@ -1968,10 +2240,13 @@ export async function runMarketingExportAndLogV2(
 
       if (candidateKeys.size > 0) {
         try {
-          const suppTables = await getTables(historyDbId);
+          // Fetch suppression metadata in PARALLEL
+          const [suppTables, suppFields] = await Promise.all([
+            getTables(historyDbId),
+            getFields(historyTableId),
+          ]);
           const suppTable = suppTables.find((t) => t.id === historyTableId);
           if (suppTable) {
-            const suppFields = await getFields(historyTableId);
             const refField = findSuppressionRefField(suppFields);
 
             const dateField = suppFields.find(
@@ -1979,40 +2254,51 @@ export async function runMarketingExportAndLogV2(
                 f.base_type === "type/DateTime" || f.base_type === "type/Date",
             );
 
+            // Detect Source_System column for source-scoped suppression
+            const sourceField =
+              findSuppressionFieldByNames(suppFields, ["Source_System"]) ||
+              suppFields.find(
+                (f: any) =>
+                  normalizeColName(f.name).includes("source") ||
+                  normalizeColName(f.name).includes("system"),
+              );
+
             if (refField) {
-              const candidateArray = Array.from(candidateKeys);
-              const chunkSize = 2000;
+              // Optimized: fetch ALL matching suppression records in a single query
+              // instead of chunked IN-clause lookups (table is small — few thousand rows)
+              let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE 1=1`;
+              if (dateField) {
+                suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+              }
+              if (sourceField) {
+                const safeTableName = masterTable.name.replace(/'/g, "''");
+                // Match both plain table name format ("TableName") and structured format ("db:X | table:TableName | ...")
+                suppSql += ` AND ([${sourceField.name}] = '${safeTableName}' OR [${sourceField.name}] LIKE '%table:${safeTableName}%')`;
+              }
 
-              for (let i = 0; i < candidateArray.length; i += chunkSize) {
-                const chunk = candidateArray.slice(i, i + chunkSize);
-                const inValues = chunk
-                  .map((v) => `'${v.replace(/'/g, "''")}'`)
-                  .join(",");
-
-                let suppSql = `SELECT [${refField.name}] FROM [${suppTable.name}] WHERE [${refField.name}] IN (${inValues})`;
-                if (dateField) {
-                  suppSql += ` AND [${dateField.name}] > DATEADD(day, -${excludeDays}, CAST(GETDATE() AS DATE))`;
+              const suppResult = await runNativeQuery(historyDbId, suppSql);
+              for (const r of suppResult.rows) {
+                const val = String(r[0]).toLowerCase().trim();
+                if (candidateKeys.has(val)) {
+                  suppressedIds.add(val);
                 }
-
-                const suppResult = await runNativeQuery(historyDbId, suppSql);
-                suppResult.rows.forEach((r) =>
-                  suppressedIds.add(String(r[0]).toLowerCase().trim()),
-                );
               }
               console.log(
-                `Exclusion lookup: Found ${suppressedIds.size} suppressed refs in [${suppTable.name}] using column [${refField.name}]`,
+                `Exclusion lookup: Found ${suppressedIds.size} suppressed refs in [${suppTable.name}] using column [${refField.name}] (source-scoped to db:${databaseId} table:${masterTable.name})`,
               );
             }
           }
         } catch (e) {
-          console.error("Failed to run chunked lookup for export:", e);
+          console.error("Failed to lookup suppression list for export:", e);
         }
       }
     }
   }
 
+  // Rows are pre-ranked by the DB (exact → related → any email). Single pass to fill cap.
   const finalRows = [];
   for (const row of exportRows) {
+    if (finalRows.length >= contactCap) break;
     if (exportRefIndex !== -1 && suppressedIds.size > 0) {
       const val = String(row[exportRefIndex]).toLowerCase().trim();
       if (val && val !== "null" && val !== "" && suppressedIds.has(val)) {
@@ -2020,8 +2306,13 @@ export async function runMarketingExportAndLogV2(
       }
     }
     finalRows.push(row);
-    if (finalRows.length >= contactCap) break;
   }
+
+  console.log("🎯 EXPORT FILTERING RESULTS:", {
+    rowsFetched: exportRows.length,
+    finalCount: finalRows.length,
+    targetCap: contactCap,
+  });
 
   // FIXED: Push exports WITH EMAILS to the top, then sort by least nulls
   const emailIndex = exportCols.findIndex((c: any) => {
@@ -2062,15 +2353,17 @@ export async function runMarketingExportAndLogV2(
 
   if (historyDbId && historyTableId && finalRows.length > 0) {
     try {
-      const suppTables = await getTables(historyDbId);
+      // Fetch suppression metadata in PARALLEL (likely cached from lookup above)
+      const [suppTables, suppFields] = await Promise.all([
+        getTables(historyDbId),
+        getFields(historyTableId),
+      ]);
       const suppTable = suppTables.find((t) => t.id === historyTableId);
       if (!suppTable) {
         throw new Error(
           `Suppression write-back failed: history table ID ${historyTableId} was not found in database ${historyDbId}.`,
         );
       }
-
-      const suppFields = await getFields(historyTableId);
 
       const suppRefField = findSuppressionRefField(suppFields);
 
@@ -2125,14 +2418,19 @@ export async function runMarketingExportAndLogV2(
           return {
             ref,
             rowSourceRaw,
-            sourceValue: buildSuppressionSourceValue(
-              rowSourceRaw,
-              databaseId,
-              masterTable.name,
-              String(exportCols[refSourceIndex].name),
-              sourceSystemColName,
-              suppressionSourceMaxLength,
-            ),
+            // Use plain table name for Source_System to match existing data format
+            // and ensure consistent read-back during suppression queries
+            sourceValue:
+              masterTable.name.length <= suppressionSourceMaxLength
+                ? masterTable.name
+                : buildSuppressionSourceValue(
+                    rowSourceRaw,
+                    databaseId,
+                    masterTable.name,
+                    String(exportCols[refSourceIndex].name),
+                    sourceSystemColName,
+                    suppressionSourceMaxLength,
+                  ),
           };
         })
         .filter(
